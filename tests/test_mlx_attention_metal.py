@@ -562,14 +562,14 @@ def test_only_the_measured_call_shape_is_forced(fused_attention, monkeypatch, ch
 def test_each_width_is_forced_at_the_width_measured_to_help(fused_attention, monkeypatch, head_dim, value_dim, on_nax,
                                                             widths):
     monkeypatch.setattr(nax, "nax_available", lambda: on_nax)
-    q = mx.zeros((1, 8, 16, head_dim), dtype=mx.bfloat16)
+    q = mx.zeros((1, 8, 256, head_dim), dtype=mx.bfloat16)
     k = mx.zeros((1, 2, 8192, head_dim), dtype=mx.bfloat16)
     v = mx.zeros((1, 2, 8192, value_dim), dtype=mx.bfloat16)
     seen = []
 
     def spy(q, k, v, **kw):
         seen.append((q.shape[-1], k.shape[-1], v.shape[-1], kw.get("force_fused", False)))
-        return mx.zeros((1, 8, 16, v.shape[-1]), dtype=mx.bfloat16)
+        return mx.zeros((1, 8, 256, v.shape[-1]), dtype=mx.bfloat16)
 
     from unsloth_zoo.mlx.attention import fused_sdpa_over
     out = fused_sdpa_over(spy)(q, k, v, scale=1.0, mask="causal")
@@ -578,6 +578,23 @@ def test_each_width_is_forced_at_the_width_measured_to_help(fused_attention, mon
         assert seen == [(head_dim, head_dim, value_dim, False)]
     else:
         assert seen == [(widths[0], widths[0], widths[1], True)]
+
+
+@pytest.mark.parametrize("on_nax", [False, True])
+@pytest.mark.parametrize("L", [16, 64, 512])
+def test_a_padded_call_is_forced_only_where_its_copies_are_smaller_than_the_scores(fused_attention, monkeypatch,
+                                                                                   on_nax, L):
+    # DeepSeek-V2's MLA repeats k_pe to every head, so its 192/128 calls carry as many K/V heads as queries.
+    monkeypatch.setattr(nax, "nax_available", lambda: on_nax)
+    q = mx.random.normal((1, 16, L, 192), key=mx.random.key(0)).astype(mx.bfloat16)
+    k = mx.random.normal((1, 16, 8192, 192), key=mx.random.key(1)).astype(mx.bfloat16)
+    v = mx.random.normal((1, 16, 8192, 128), key=mx.random.key(2)).astype(mx.bfloat16)
+    mx.eval(q, k, v)
+    call = lambda sdpa: sdpa(q, k, v, scale=192 ** -0.5, mask="causal")
+    assert _peak_of(lambda: call(mx.fast.scaled_dot_product_attention)) <= _peak_of(lambda: call(fused_attention))
+    q_keys, q_values = _cache(1, 16, 8192, 192, 8, group_size=64, Dv=128)
+    padding = forced_padding_row_bytes(192, 128, 16, 2, 8192)
+    assert runtime_fuses(_queries(1, 16, L, 192), q_keys, q_values, 64, "causal") is (16 * L * 2 > padding)
 
 
 def test_the_padded_copies_count_against_dequantizing_and_only_where_a_call_is_forced(monkeypatch):

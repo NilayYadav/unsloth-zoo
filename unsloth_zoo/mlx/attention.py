@@ -141,10 +141,13 @@ def _forced_widths(head_dim, value_dim):
     return None
 
 
-def _forces_fused(queries, n_keys, head_dim, value_dim, dtype, mask):
+def _forces_fused(queries, n_keys, head_dim, value_dim, dtype, mask, kv_heads):
+    # A padded copy of K and V grows with the keys like the scores do, so it must be the smaller of the two.
     return (_forced_widths(head_dim, value_dim) is not None and isinstance(mask, str) and mask == "causal"
             and _FORCED_MIN_QUERIES <= queries.shape[-2] <= n_keys and n_keys >= _FORCED_MIN_KEYS
-            and dtype != mx.float32 and mx.metal.is_available() and mx.default_device() == mx.gpu)
+            and dtype != mx.float32 and mx.metal.is_available() and mx.default_device() == mx.gpu
+            and queries.shape[-3] * queries.shape[-2] * dtype.size
+            > forced_padding_row_bytes(head_dim, value_dim, kv_heads, dtype.size, n_keys))
 
 
 def forced_padding_row_bytes(head_dim, value_dim, kv_heads, dtype_size, n_keys):
@@ -172,7 +175,7 @@ def runtime_fuses(queries, q_keys, q_values, group_size, mask=None):
     route = (queries, q_keys[0].shape[-2], q_keys[1].shape[-1] * group_size, q_values[1].shape[-1] * group_size,
              _result_dtype(queries, q_keys, q_values), mask)
     return (fused_kernel_exists(queries, q_keys, q_values, group_size, mask)
-            or _forces_fused(*route) or _blocks_d512_scores(*route))
+            or _forces_fused(*route, q_keys[0].shape[-3]) or _blocks_d512_scores(*route))
 
 
 def fused_sdpa_over(stock):
@@ -182,7 +185,7 @@ def fused_sdpa_over(stock):
         from .utils import mlx_training_patches_active
 
         if (sinks is None and not kwargs and q.dtype == k.dtype == v.dtype
-                and _forces_fused(q, k.shape[-2], k.shape[-1], v.shape[-1], q.dtype, mask)
+                and _forces_fused(q, k.shape[-2], k.shape[-1], v.shape[-1], q.dtype, mask, k.shape[-3])
                 and not mlx_training_patches_active()):
             head_dim, value_dim = _forced_widths(k.shape[-1], v.shape[-1])
             out = stock(_pad_width(q, head_dim), _pad_width(k, head_dim), _pad_width(v, value_dim), scale=scale,
