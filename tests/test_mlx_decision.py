@@ -499,7 +499,6 @@ def test_d1_answers_the_engines_probabilities_on_this_contract():
     result = model.answer(None, D1_QUESTIONS)
     answers = result["answers"]
     assert result["usage"] == {"input_tokens": 11, "output_tokens": 0}
-    # The engine's calibration is applied already, so nothing is read through a temperature again.
     assert answers["yes"]["noul"] == pytest.approx(0.8)
     assert answers["team"]["choice"] == "a"
     assert answers["team"]["probabilities"] == pytest.approx({"b": 0.25, "a": 0.75})
@@ -508,7 +507,6 @@ def test_d1_answers_the_engines_probabilities_on_this_contract():
     assert answers["team"]["confidence"] == pytest.approx(0.75)
     state, questions, media = engine.requests[0]
     assert state is None and media == []
-    # Options keep the caller's order, which is what the probabilities follow.
     assert questions[1]["criteria"] == {"b": "second", "a": None}
     assert questions[2]["criteria"] == ["low", "mid", "high"]
 
@@ -516,7 +514,6 @@ def test_d1_answers_the_engines_probabilities_on_this_contract():
 def test_d1_score_stops_at_the_first_level_past_half_and_lfm2_keeps_the_general_readout():
     question = {"level": {"instructions": "i", "type": "score", "criteria": ["low", "mid", "high"]}}
     assert _d1("lfm3_omni", [[0.5, 0.1, 0.4]])[0].answer("s", question)["answers"]["level"]["score"] == 0.0
-    # The median, not the likeliest level.
     assert _d1("lfm3_omni", [[0.3, 0.3, 0.4]])[0].answer("s", question)["answers"]["level"]["score"] == 1.0
     answer = _d1("lfm2_vl", None)[0]
     answer.model = types.SimpleNamespace(probabilities = lambda *_: ([[0.1, 0.2, 0.7]], 5))
@@ -657,7 +654,6 @@ def test_d1_item_packs_questions_after_the_state_and_reads_each_at_its_last_toke
     monkeypatch.setattr(prompt, "suffix_layout", lambda tokenizer, question, lead: (f"{question['instructions']}?", [0]))
     questions = {"a": {"type": "noul", "instructions": "x"}, "b": {"type": "choice", "instructions": "yy", "criteria": {"k": None, "l": None, "m": None}}}
     item = decision.d1_training_item(_d1_trainable(), "st", questions)
-    # "S:st\n" is the state, "x?" the first question, then "Q\nyy?" the second.
     assert item["state_length"] == 5 and item["input_ids"] == [ord(c) for c in "S:st\nx?Q\nyy?"]
     assert item["groups"] == [-1] * 5 + [1, 1] + [2] * 5
     assert item["slots"] == [6, 11]
@@ -694,7 +690,6 @@ def test_d1_logits_are_each_options_best_form_at_its_slot(monkeypatch):
     monkeypatch.setattr(prompt, "readout_table", lambda tokenizer, question: next(tables))
     item = {"input_ids": [0], "state_length": 0, "groups": [1], "slots": [2, 10], "asked": ["first", "second"]}
     logits = decision._item_logits(_d1_trainable(), item)
-    # hidden[slot] @ embed(token) is slot * token here; each option scores its best form, in option order.
     assert logits.tolist() == [10.0, 10.0, 20.0, 70.0]
 
 
@@ -758,7 +753,6 @@ def test_a_prepared_model_answers_on_this_contract(monkeypatch):
     assert out["usage"]["input_tokens"] == 7 and seen["state"] == "state" and "images" not in seen
     assert seen["questions"]["c"]["criteria"] == {"a": "first", "b": None} and seen["questions"]["s"]["criteria"] == ["l", "m", "h"]
     assert out["answers"]["n"]["noul"] == pytest.approx(0.8)
-    # By key, not by the order the model lists them in.
     assert out["answers"]["c"]["choice"] == "b" and out["answers"]["c"]["probabilities"]["a"] == pytest.approx(0.4)
     assert out["answers"]["s"]["score"] == pytest.approx(1.2)
 
@@ -787,7 +781,6 @@ def test_laya_reads_a_requests_questions_in_batches_under_a_token_budget(monkeyp
 
     def logits(batch):
         batches.append(batch)
-        # A row's logits say which row and option they are, past the row's own options too.
         return np.array([[10.0 * row + option for option in range(batch["marker_mask"].shape[1])] for row in range(len(batch["input_ids"]))])
 
     monkeypatch.setattr(decision._MarkerModel, "_prompt", lambda self, state, question: prompts[question.id])
@@ -801,9 +794,7 @@ def test_laya_reads_a_requests_questions_in_batches_under_a_token_budget(monkeyp
     assert first["attention_mask"].sum(axis = 1).tolist() == [3, 5, 1]
     assert first["marker_pos"].tolist() == [[0, 0], [1, 3], [0, 0]]
     assert first["marker_mask"].tolist() == [[True, False], [True, True], [True, False]]
-    # Each question reads only its own options, and order survives the batches.
     assert scores == [[[0.0]], [[10.0, 11.0]], [[20.0]], [[0.0]]]
-    # A longer prompt counts against the rows before it, not only the rows after it.
     prompts.update(a = ([1] * 4, [0]), b = ([1] * 10, [0]))
     batches.clear()
     model._scores("s", questions[:2])
@@ -854,7 +845,6 @@ def test_a_saved_d1_is_read_as_one_and_keeps_no_stale_calibration(tmp_path, monk
     monkeypatch.setattr(decision, "_write_merged_shards", lambda decoder, src, staging, requantize: (staging / "model.safetensors").write_bytes(b"merged") and set())
     pipeline = types.SimpleNamespace(model = None, source = source)
     out.mkdir()
-    # An earlier save, sharded and as a Clef, over which this one is written.
     for name in ("calibration.json", "model-00001-of-00002.safetensors", "model.safetensors.index.json", "joint_head.safetensors", "joint_head_config.json"):
         (out / name).write_text("{}")
     decision.save_d1_model(pipeline, out)

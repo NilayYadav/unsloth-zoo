@@ -1097,7 +1097,6 @@ def test_a_d1_save_keeps_the_update_a_quantized_source_rounds_away(tmp_path):
     saved = mx.load(str(kept / "model.safetensors"))
     assert saved.keys() == stored.keys() - {f"{name}.scales", f"{name}.biases"} and saved[f"{name}.weight"].dtype == base.dtype
     assert np.abs(np.array(saved[f"{name}.weight"].astype(mx.float32)) - trained).mean() < update / 4
-    # Requantized as a Clef's decoder is, most of the same update is rounded away.
     _write_merged_shards(packed, source, requantized)
     again = mx.load(str(requantized / "model.safetensors"))
     refit = mx.dequantize(*(again[f"{name}.{leaf}"] for leaf in ("weight", "scales", "biases")), group_size = 64, bits = 4)

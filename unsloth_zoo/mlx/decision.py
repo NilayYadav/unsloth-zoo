@@ -683,7 +683,6 @@ class _MarkerModel(DecisionPipeline):
         rows = [(question, *self._prompt(state, question)) for question in questions]
         scores, start = [], 0
         while start < len(rows):
-            # A batch costs its longest prompt per row, so a long prompt does not pad many short ones past this.
             end, longest = start + 1, len(rows[start][1])
             while end < len(rows) and (end - start + 1) * max(longest, len(rows[end][1])) <= _MARKER_BATCH_TOKENS:
                 longest = max(longest, len(rows[end][1]))
@@ -1695,8 +1694,6 @@ _D1_PACKAGES = {"lfm2_vl": "d1", "d1_omni": "d1_omni", "lfm3_vl": "d1_lfm3_vl", 
 
 
 class _D1Model(DecisionPipeline):
-    """LiquidAI d1: mlx-vlm's engines read the model and its calibration; requests and answers are this module's."""
-
     family = "d1"
     sources = ("LiquidAI/d1-3B", "LiquidAI/d1-omni-600M", "LiquidAI/d1-2B", "LiquidAI/d1-Omni-2B")
     needs = "its config.json naming a d1 model"
@@ -1746,7 +1743,6 @@ class _D1Model(DecisionPipeline):
         return None
 
     def _read(self, state, questions, images, audio):
-        """Each question's probabilities in the order of its options, and the tokens read."""
         if self._backbone == "d1_omni":
             if images and audio:
                 raise DecisionUnsupportedError("this model reads images or audio in a request, not both")
@@ -1767,14 +1763,12 @@ class _D1Model(DecisionPipeline):
             raise
         except ValueError as error:
             raise DecisionRequestError(str(error)) from error
-        # Scores whose softmax is what the engine answered: its calibration has been applied.
         return [[[math.log(max(float(p), 1e-300)) for p in row]] for row in probabilities], tokens
 
     def _format_answer(self, question, variants):
         answer = super()._format_answer(question, variants)
         if question.type == "noul" or self._backbone not in ("lfm3_vl", "lfm3_omni"):
             return answer
-        # On LFM3 a score is its median level and a confidence the answer's probability.
         probs = list(answer["probabilities"].values())
         answer["confidence"] = max(probs)
         if question.type == "score":
@@ -1791,9 +1785,6 @@ _VLM_PREPARED = ("decider2", "laya", "clef")
 
 
 class _VlmModel(DecisionPipeline):
-    """A checkpoint prepared for mlx-vlm's own `predict`: Decider, and Laya or Clef with their metadata in config.json.
-    Their source layouts load through `_MarkerModel` and `ClefModel`, which also train."""
-
     family = "mlx_vlm"
     sources = ("nativ-community/decider-2b", "Mapika/decider-2b")
     needs = "config.json naming a prepared model, or decider_config.json beside a Qwen3.5 decoder"
@@ -1812,7 +1803,6 @@ class _VlmModel(DecisionPipeline):
         if config.get("model_type") in _VLM_PREPARED:
             self.model, self.processor = load(str(folder))
         else:
-            # The published Decider names its decoder qwen3_5_text and keeps its settings apart.
             prepared = {**config, "model_type": "decider2", "decision_config": _read_json(folder / "decider_config.json")}
             with tempfile.TemporaryDirectory() as view:
                 for item in folder.iterdir():
@@ -1914,7 +1904,6 @@ def load_language_model_as_clef(path, compute_dtype = None, *, head_width = None
     return ClefModel.from_language_model(folder, compute_dtype, token, head_width, head_config, seed, load_in_4bit)
 
 
-# What makes an LFM3 checkpoint a d1, as the released ones record it.
 _D1_TRAINED_CONFIG = {"architectures": ["D1Model"], "d1_attention": "set", "d1_codes": 2, "d1_numbers": True, "d1_set_size": 16}
 _D1_TRAINABLE = ("lfm3_vl", "lfm3_omni")
 
@@ -1924,8 +1913,7 @@ def _as_d1_config(config):
 
 
 def load_language_model_as_d1(path, compute_dtype = None, *, token = None):
-    """Load an LFM3-VL or LFM3-Omni language model to train as a d1, whose answers are its own output embedding at the
-    answer slots under set attention, so no head is added. A d1 checkpoint loads as it is, to go on training."""
+    """Load an LFM3-VL or LFM3-Omni language model to train as a d1; no head is added."""
     folder = Path(path)
     if not folder.is_dir():
         from huggingface_hub import snapshot_download
@@ -2872,7 +2860,6 @@ def _clips(audio):
 
 
 class D1Network(nn.Module):
-    """A loaded d1's model as the parameter tree the trainer optimizes; a record trains as `ClefNetwork`'s do."""
 
     def __init__(self, pipeline, gradient_checkpointing = True):
         super().__init__()
@@ -2899,8 +2886,7 @@ def d1_training_network(pipeline, full_finetuning = False, r = 64, lora_alpha = 
 
 
 def d1_training_item(pipeline, state, questions, images = None, audio = None):
-    """Tokenize one record for a d1, its questions read in one row as `set` attention trained them; the caller adds
-    targets over clef_option_keys. Images are PIL or data URLs, audio clips data URLs or {array, sampling_rate} at 16 kHz mono."""
+    """Tokenize one record for a d1; images are PIL or data URLs, audio data URLs or {array, sampling_rate} at 16 kHz mono."""
     from mlx_vlm.models.d1_lfm3_vl.d1 import pack_set
     from mlx_vlm.models.d1_lfm3_vl.prompt import prefix_text, question_header, suffix_layout
 
@@ -2908,7 +2894,6 @@ def d1_training_item(pipeline, state, questions, images = None, audio = None):
     if len(parsed) > engine.set_size:
         raise DecisionRequestError(f"too many questions for one record, the maximum is {engine.set_size}")
     asked = [engine.ask(pipeline._question(question)) for question in parsed]
-    # Merged with the state's image parts, as a request is served.
     given = list(images or ())
     urls = _image_urls(state, [image for image in given if isinstance(image, str)])
     images, audio = given + urls[sum(isinstance(image, str) for image in given):], list(audio or ())
@@ -2934,7 +2919,6 @@ def _d1_media(item):
 
 
 def _d1_logits(pipeline, item):
-    """One logit per option of the record, in question order, as the engine reads them at the answer slots."""
     from mlx_vlm.models.d1_lfm3_vl.prompt import readout_table
 
     model, engine = pipeline.model, pipeline.model.engine
@@ -2956,9 +2940,7 @@ def d1_answer(pipeline, question, probabilities):
 
 
 def save_d1_model(pipeline, folder, source = None, temperatures = None):
-    """Write a trained d1 as a d1 checkpoint mlx-vlm and `load_decision_model` read. LoRA adapters are merged into the
-    source's weights. A source's calibration describes the model before training, so it is not kept; `temperatures`,
-    fitted after training by question type, are written as its calibration instead."""
+    """Write a trained d1 checkpoint with LoRA merged; `temperatures` replace the source's stale calibration."""
     folder, source = _apart(folder, source or pipeline.source)
     folder.mkdir(parents = True, exist_ok = True)
     staging = Path(tempfile.mkdtemp(dir = folder, prefix = ".saving-"))
@@ -2973,7 +2955,6 @@ def save_d1_model(pipeline, folder, source = None, temperatures = None):
             listed["weight_map"] = {name: shard for name, shard in listed["weight_map"].items() if name not in dropped}
             index.write_text(json.dumps(listed, indent = 2), encoding = "utf-8")
         if temperatures:
-            # Its calibration names a choice by size and a score by its levels; every score is what is left to the default.
             buckets = {"noul": temperatures["noul"], **{f"choice:{size}": temperatures["choice"] for size in ("small", "mid", "large", "inventory")}}
             (staging / "calibration.json").write_text(json.dumps({"temperatures": buckets, "default": temperatures["score"]}), encoding = "utf-8")
         config, stems = _as_d1_config(_read_json(source / "config.json")), {name.rpartition(".")[0] for name in dropped}
@@ -2984,7 +2965,6 @@ def save_d1_model(pipeline, folder, source = None, temperatures = None):
         # config.json makes a folder a d1: it is replaced last, so an interrupted save does not read as complete.
         (folder / "config.json").unlink(missing_ok = True)
         (folder / "calibration.json").unlink(missing_ok = True)
-        # An earlier save's weights in another layout, or another kind of save, would be read beside these.
         staged = {item.name for item in staging.iterdir()}
         for item in [*folder.glob("model*.safetensors"), *(folder / name for name in ("model.safetensors.index.json", "joint_head.safetensors", "joint_head_config.json", "adapter_config.json", "adapter_model.safetensors"))]:
             if item.name not in staged:
