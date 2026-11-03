@@ -2180,9 +2180,10 @@ def _commit_clef(pipeline, staging, folder, source, head, config, copied = ("*",
             item.unlink(missing_ok = True)
 
 
-def _write_merged_shards(decoder, source, staging):
-    """The source's weights plus what training added to `decoder`, written to `staging`."""
-    deltas, stored, refitted = _clef_decoder_deltas(decoder, source), _stored_tensors(source), {}
+def _write_merged_shards(decoder, source, staging, requantize = True):
+    """The source's weights plus what training added to `decoder`, written to `staging`. Without `requantize`, a trained
+    weight the source holds quantized is written dequantized, and the names of its dropped scales and biases are returned."""
+    deltas, stored, refitted, dropped = _clef_decoder_deltas(decoder, source), _stored_tensors(source), {}, set()
     quantization = _read_json(source / "config.json").get("quantization", {})
 
     def refit(stem, leaf, tensors):
@@ -2198,10 +2199,15 @@ def _write_merged_shards(decoder, source, staging):
             weight = mx.dequantize(parts["weight"], parts["scales"], parts.get("biases"), group_size = group, bits = bits, mode = mode)
             if not mx.isfinite(weight + delta).all().item():
                 raise ValueError(f"Unsloth: {stem}.weight has values that are not finite, so the model cannot be saved.")
-            fitted = mx.quantize(weight.astype(mx.float32) + delta, group, bits, mode = mode)
-            refitted[stem] = {part: value.astype(parts[part].dtype) for part, value in zip(parts, fitted)}
+            merged = weight.astype(mx.float32) + delta
+            if requantize:
+                fitted = mx.quantize(merged, group, bits, mode = mode)
+                refitted[stem] = {part: value.astype(parts[part].dtype) for part, value in zip(parts, fitted)}
+            else:
+                # Requantizing rounds most of a LoRA update away: a d1, with no head to carry it, would lose its training.
+                refitted[stem] = {"weight": merged.astype(weight.dtype)}
         # Handed over once, so that a written shard's tensors are not held until the last one.
-        return refitted[stem].pop(leaf)
+        return refitted[stem].pop(leaf, None)
 
     packed = {name.rpartition(".")[0] for name in deltas if name.rpartition(".")[0] + ".scales" in stored}
     for shard in sorted(source.glob("model*.safetensors")):
@@ -2209,7 +2215,11 @@ def _write_merged_shards(decoder, source, staging):
         for name, value in tensors.items():
             stem, _, leaf = name.rpartition(".")
             if stem in packed and leaf in ("weight", "scales", "biases"):
-                changed[name] = refit(stem, leaf, tensors)
+                value = refit(stem, leaf, tensors)
+                if value is None:
+                    dropped.add(name)
+                else:
+                    changed[name] = value
             elif name in deltas:
                 # transformers stores convolution kernels channels-first.
                 kernel = value.ndim == 3 and deltas[name][0][1].shape != value.shape
@@ -2217,13 +2227,17 @@ def _write_merged_shards(decoder, source, staging):
                 if terms[0][1].shape != value.shape:
                     raise ValueError(f"Unsloth: {name} has shape {value.shape} in {source}, not the trained {terms[0][1].shape}.")
                 changed[name] = _add_in_slices(name, value, terms)
-        if not changed:
+        gone = dropped.intersection(tensors)
+        if not changed and not gone:
             shutil.copyfile(shard, staging / shard.name)
             continue
         tensors.update(changed)
-        mx.save_safetensors(str(staging / shard.name), tensors, metadata = {"format": "pt"})
+        tensors = {name: value for name, value in tensors.items() if name not in gone}
+        if tensors:
+            mx.save_safetensors(str(staging / shard.name), tensors, metadata = {"format": "pt"})
     if deltas:
         raise ValueError(f"Unsloth: {source} holds no weights for the trained {sorted(deltas)[:3]}.")
+    return dropped
 
 
 def save_clef_model(pipeline, folder, source, config = None):
@@ -2949,15 +2963,24 @@ def save_d1_model(pipeline, folder, source = None, temperatures = None):
     folder.mkdir(parents = True, exist_ok = True)
     staging = Path(tempfile.mkdtemp(dir = folder, prefix = ".saving-"))
     try:
-        _write_merged_shards(pipeline.model, source, staging)
+        dropped = _write_merged_shards(pipeline.model, source, staging, requantize = False)
         for item in source.iterdir():
-            if item.is_file() and not item.name.startswith(".") and item.name not in ("README.md", "calibration.json", "config.json") and not (staging / item.name).exists():
+            if item.is_file() and not item.name.startswith(".") and item.name not in ("README.md", "calibration.json", "config.json") and not (staging / item.name).exists() and not item.match("model*.safetensors"):
                 shutil.copyfile(item, staging / item.name)
+        index = staging / "model.safetensors.index.json"
+        if dropped and index.is_file():
+            listed = _read_json(index)
+            listed["weight_map"] = {name: shard for name, shard in listed["weight_map"].items() if name not in dropped}
+            index.write_text(json.dumps(listed, indent = 2), encoding = "utf-8")
         if temperatures:
             # Its calibration names a choice by size and a score by its levels; every score is what is left to the default.
             buckets = {"noul": temperatures["noul"], **{f"choice:{size}": temperatures["choice"] for size in ("small", "mid", "large", "inventory")}}
             (staging / "calibration.json").write_text(json.dumps({"temperatures": buckets, "default": temperatures["score"]}), encoding = "utf-8")
-        (staging / "config.json").write_text(json.dumps(_as_d1_config(_read_json(source / "config.json")), indent = 2), encoding = "utf-8")
+        config, stems = _as_d1_config(_read_json(source / "config.json")), {name.rpartition(".")[0] for name in dropped}
+        for key in ("quantization", "quantization_config"):
+            if isinstance(config.get(key), dict):
+                config[key] = {name: value for name, value in config[key].items() if name not in stems}
+        (staging / "config.json").write_text(json.dumps(config, indent = 2), encoding = "utf-8")
         # config.json makes a folder a d1: it is replaced last, so an interrupted save does not read as complete.
         (folder / "config.json").unlink(missing_ok = True)
         (folder / "calibration.json").unlink(missing_ok = True)

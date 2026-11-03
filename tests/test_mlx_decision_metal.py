@@ -1072,6 +1072,37 @@ def test_a_plain_language_model_gets_a_new_joint_head_and_saves_as_a_clef(clef, 
     assert sum(not mx.array_equal(saved[key], stored[key]) for key in stored if key.endswith(".weight")) == len([module for _, module in packed.named_modules() if "lora_a" in module])
 
 
+def test_a_d1_save_keeps_the_update_a_quantized_source_rounds_away(tmp_path):
+    from mlx.utils import tree_unflatten
+    from mlx_lm.tuner.lora import LoRALinear
+    from unsloth_zoo.mlx.decision import _write_merged_shards
+
+    mx.random.seed(0)
+    packed, name = _decoder(quantized = True, bits = 4), "language_model.model.layers.2.mlp.down_proj"
+    stored = dict(tree_flatten(packed.parameters()))
+    source = tmp_path / "source"
+    source.mkdir()
+    mx.save_safetensors(str(source / "model.safetensors"), stored)
+    (source / "config.json").write_text(json.dumps({"quantization": {"group_size": 64, "bits": 4}}))
+    packed.freeze()
+    low = LoRALinear.from_base(dict(packed.named_modules())[name], r = 4, scale = 2.0)
+    low.lora_b = mx.random.normal(low.lora_b.shape) * 1e-2
+    packed.update_modules(tree_unflatten([(name, low)]))
+    base = mx.dequantize(*(stored[f"{name}.{leaf}"] for leaf in ("weight", "scales", "biases")), group_size = 64, bits = 4)
+    trained = np.array(base.astype(mx.float32) + low.scale * low.lora_b.T @ low.lora_a.T)
+    update = np.abs(trained - np.array(base.astype(mx.float32))).mean()
+    kept, requantized = tmp_path / "kept", tmp_path / "requantized"
+    kept.mkdir(), requantized.mkdir()
+    assert _write_merged_shards(packed, source, kept, requantize = False) == {f"{name}.scales", f"{name}.biases"}
+    saved = mx.load(str(kept / "model.safetensors"))
+    assert saved.keys() == stored.keys() - {f"{name}.scales", f"{name}.biases"} and saved[f"{name}.weight"].dtype == base.dtype
+    assert np.abs(np.array(saved[f"{name}.weight"].astype(mx.float32)) - trained).mean() < update / 4
+    # Requantized as a Clef's decoder is, most of the same update is rounded away.
+    _write_merged_shards(packed, source, requantized)
+    again = mx.load(str(requantized / "model.safetensors"))
+    refit = mx.dequantize(*(again[f"{name}.{leaf}"] for leaf in ("weight", "scales", "biases")), group_size = 64, bits = 4)
+    assert np.abs(np.array(refit.astype(mx.float32)) - trained).mean() > update / 2
+
 def test_clef_prompt_gives_up_the_end_of_the_state_only(clef):
     from unsloth_zoo.mlx.decision import DecisionRequestError
 

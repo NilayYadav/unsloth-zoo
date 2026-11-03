@@ -851,7 +851,7 @@ def test_a_saved_d1_is_read_as_one_and_keeps_no_stale_calibration(tmp_path, monk
     for name in ("calibration.json", "README.md", "tokenizer.json", "processor_config.json"):
         (source / name).write_text("{}")
     (source / "model.safetensors").write_bytes(b"stale")
-    monkeypatch.setattr(decision, "_write_merged_shards", lambda decoder, src, staging: (staging / "model.safetensors").write_bytes(b"merged"))
+    monkeypatch.setattr(decision, "_write_merged_shards", lambda decoder, src, staging, requantize: (staging / "model.safetensors").write_bytes(b"merged") and set())
     pipeline = types.SimpleNamespace(model = None, source = source)
     out.mkdir()
     # An earlier save, sharded and as a Clef, over which this one is written.
