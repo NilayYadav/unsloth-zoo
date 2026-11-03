@@ -866,6 +866,29 @@ def test_a_saved_d1_is_read_as_one_and_keeps_no_stale_calibration(tmp_path, monk
     assert fitted.temperatures.get(calibration.bucket("score", 5), fitted.default) == 3.0
 
 
+def test_a_d1_saved_from_a_quantized_source_forgets_what_it_dequantized(tmp_path, monkeypatch):
+    source, out = tmp_path / "source", tmp_path / "out"
+    source.mkdir()
+    own = {"group_size": 32, "bits": 8}
+    quantization = {"group_size": 32, "bits": 4, "a.w": own, "a.v": own}
+    (source / "config.json").write_text(json.dumps({"model_type": "lfm3_omni", "quantization": quantization, "quantization_config": quantization}))
+    names = [f"a.{module}.{leaf}" for module in "wv" for leaf in ("weight", "scales", "biases")]
+    (source / "model.safetensors.index.json").write_text(json.dumps({"metadata": {}, "weight_map": dict.fromkeys(names, "model.safetensors")}))
+    (source / "model.safetensors").write_bytes(b"source")
+    asked = []
+
+    def write(decoder, src, staging, requantize):
+        asked.append(requantize)
+        (staging / "model.safetensors").write_bytes(b"merged")
+        return {"a.w.scales", "a.w.biases"}
+
+    monkeypatch.setattr(decision, "_write_merged_shards", write)
+    decision.save_d1_model(types.SimpleNamespace(model = None, source = source), out)
+    config = json.loads((out / "config.json").read_text())
+    assert asked == [False] and (out / "model.safetensors").read_bytes() == b"merged"
+    assert all("a.w" not in config[key] and config[key]["a.v"] == own and config[key]["bits"] == 4 for key in ("quantization", "quantization_config"))
+    assert sorted(json.loads((out / "model.safetensors.index.json").read_text())["weight_map"]) == ["a.v.biases", "a.v.scales", "a.v.weight", "a.w.weight"]
+
 def test_a_d1_answer_from_probabilities_is_the_served_one():
     model = decision._D1Model.__new__(decision._D1Model)
     model._backbone, model.noul_true_first = "lfm3_omni", True
