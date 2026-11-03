@@ -838,6 +838,10 @@ def test_only_lfm3_trains_as_a_d1(tmp_path):
         decision.load_language_model_as_d1(tmp_path)
     with pytest.raises(ValueError, match = "for LFM3 checkpoints"):
         decision.d1_training_network(_d1_trainable("lfm2_vl"))
+    for backbone, config in (("d1_omni", {}), ("lfm2_vl", {"auto_map": {"AutoModel": "modeling_d1.D1Model"}})):
+        (tmp_path / "config.json").write_text(json.dumps({"model_type": backbone, **config}))
+        with pytest.raises(ValueError, match = f"not '{backbone}'; load_decision_model serves it"):
+            decision.load_language_model_as_d1(tmp_path)
 
 
 def test_a_saved_d1_is_read_as_one_and_keeps_no_stale_calibration(tmp_path, monkeypatch):

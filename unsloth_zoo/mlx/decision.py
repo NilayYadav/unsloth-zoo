@@ -1933,12 +1933,13 @@ def load_language_model_as_d1(path, compute_dtype = None, *, token = None):
         folder = Path(snapshot_download(str(path), token = token))
     if isinstance(compute_dtype, str):
         compute_dtype = getattr(mx, compute_dtype)
+    config = _read_json(folder / "config.json")
+    if config.get("model_type") not in _D1_TRAINABLE:
+        other = "load_decision_model serves it" if _D1Model.matches(folder) else "load_language_model_as_clef takes other language models"
+        raise ValueError(f"Unsloth: a d1 trains on {' or '.join(_D1_TRAINABLE)}, not {config.get('model_type')!r}; {other}.")
     if _D1Model.matches(folder):
         pipeline = _D1Model(folder, compute_dtype)
     else:
-        config = _read_json(folder / "config.json")
-        if config.get("model_type") not in _D1_TRAINABLE:
-            raise ValueError(f"Unsloth: a d1 trains on {' or '.join(_D1_TRAINABLE)}, not {config.get('model_type')!r}; load_language_model_as_clef takes other language models.")
         with tempfile.TemporaryDirectory() as view:
             for item in folder.iterdir():
                 if item.name != "config.json":
