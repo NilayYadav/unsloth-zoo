@@ -174,8 +174,10 @@ def runtime_fuses(queries, q_keys, q_values, group_size, mask=None):
     """Whether a loaded model's call avoids building full scores: mlx's own route or a forced one."""
     route = (queries, q_keys[0].shape[-2], q_keys[1].shape[-1] * group_size, q_values[1].shape[-1] * group_size,
              _result_dtype(queries, q_keys, q_values), mask)
-    return (fused_kernel_exists(queries, q_keys, q_values, group_size, mask)
-            or _forces_fused(*route, q_keys[0].shape[-3]) or _blocks_d512_scores(*route))
+    from .utils import mlx_training_patches_active
+
+    forced = not mlx_training_patches_active() and _forces_fused(*route, q_keys[0].shape[-3])
+    return fused_kernel_exists(queries, q_keys, q_values, group_size, mask) or forced or _blocks_d512_scores(*route)
 
 
 def fused_sdpa_over(stock):

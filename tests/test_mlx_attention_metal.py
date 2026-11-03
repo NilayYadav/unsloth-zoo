@@ -597,6 +597,17 @@ def test_a_padded_call_is_forced_only_where_its_copies_are_smaller_than_the_scor
     assert runtime_fuses(_queries(1, 16, L, 192), q_keys, q_values, 64, "causal") is (16 * L * 2 > padding)
 
 
+def test_training_never_predicts_the_route_the_wrapper_declines(monkeypatch):
+    from unsloth_zoo.mlx import utils
+
+    q_keys, q_values = _cache(1, 2, 8192, 256, 4, group_size=64)
+    queries = _queries(1, 8, 512, 256)
+    monkeypatch.setattr(nax, "nax_available", lambda: False)
+    assert runtime_fuses(queries, q_keys, q_values, 64, "causal")
+    monkeypatch.setattr(utils, "mlx_training_patches_active", lambda: True)
+    assert not runtime_fuses(queries, q_keys, q_values, 64, "causal")
+
+
 def test_the_padded_copies_count_against_dequantizing_and_only_where_a_call_is_forced(monkeypatch):
     monkeypatch.setattr(nax, "nax_available", lambda: True)
     assert forced_padding_row_bytes(192, 128, 2, 2, 8191) == 0
