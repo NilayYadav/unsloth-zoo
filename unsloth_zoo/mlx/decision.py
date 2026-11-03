@@ -2897,6 +2897,10 @@ def d1_training_item(pipeline, state, questions, images = None, audio = None):
     given = list(images or ())
     urls = _image_urls(state, [image for image in given if isinstance(image, str)])
     images, audio = given + urls[sum(isinstance(image, str) for image in given):], list(audio or ())
+    if len(images) > _MAX_IMAGES:
+        raise DecisionRequestError(f"too many images, the maximum is {_MAX_IMAGES}")
+    if len(audio) > _MAX_AUDIO:
+        raise DecisionRequestError(f"too many audio clips, the maximum is {_MAX_AUDIO}")
     if urls:
         state = _without_image_parts(state)
     item ={"images": images, "audio": audio} if images or audio else {}

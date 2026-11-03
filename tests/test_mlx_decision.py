@@ -682,6 +682,10 @@ def test_d1_item_refuses_more_questions_than_a_row_trained(monkeypatch):
     questions = {name: {"type": "noul", "instructions": "x"} for name in "abc"}
     with pytest.raises(DecisionRequestError, match = "the maximum is 2"):
         decision.d1_training_item(_d1_trainable(set_size = 2), "st", questions)
+    one = {"a": {"type": "noul", "instructions": "x"}}
+    for media in ({"images": [object()] * (decision._MAX_IMAGES + 1)}, {"audio": ["data:audio/wav;base64,AA=="] * (decision._MAX_AUDIO + 1)}):
+        with pytest.raises(DecisionRequestError, match = "too many"):
+            decision.d1_training_item(_d1_trainable(), "st", one, **media)
 
 
 def test_d1_logits_are_each_options_best_form_at_its_slot(monkeypatch):
