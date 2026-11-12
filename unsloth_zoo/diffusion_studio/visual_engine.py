@@ -346,6 +346,12 @@ def _generate_visual_once(server, messages, seed, max_blocks, on_frame, on_commi
             break
         if line.startswith("ERR"):
             parts = line.split()
+            # The server still ends these two with DONE; left unread it would be taken as the next turn's whole reply.
+            if len(parts) >= 2 and parts[1] in ("toolong", "gen"):
+                while True:
+                    tail = server.p.stdout.readline()
+                    if not tail or tail.rstrip("\n") == "DONE":
+                        break
             if len(parts) >= 2 and parts[1] == "toolong":
                 needed = int(parts[2]) if len(parts) > 2 else 0
                 budget = int(parts[3]) if len(parts) > 3 else 0
