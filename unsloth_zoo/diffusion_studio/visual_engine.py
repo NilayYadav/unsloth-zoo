@@ -163,9 +163,8 @@ def _build_subprocess_env(server_bin, gpu = None, maxtok = 0, ngl = None, base_e
 
 
 def _canvas_maxtok(maxtok):
-    """Keeps MAXTOK only when 0 < value <= 8192, else 0 for auto-size: the non-causal canvas compute buffer grows ~quadratically, so oversized values must defer."""
-    maxtok = int(maxtok)
-    return maxtok if 0 < maxtok <= 8192 else 0
+    """Passes an explicit MAXTOK through, 0 for auto-size: the server keeps it only when its canvas buffer fits and otherwise auto-sizes no larger than it."""
+    return max(int(maxtok), 0)
 
 
 def _replace_request_file(req_path, req):

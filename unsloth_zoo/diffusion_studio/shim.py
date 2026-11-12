@@ -244,8 +244,8 @@ def _max_blocks(body):
         mt = int(mt)
     except (TypeError, ValueError):
         mt = 2048
-    # A size bound, not a deadline: explicit maxtok is capped at 8192 by `_canvas_maxtok`, so this binds only on an
-    # auto-sized budget above 16384; `DG_MAX_BLOCKS` raises it and is read per call so Studio can set it after import.
+    # A size bound, not a deadline: it binds only on a context budget above 16384; `DG_MAX_BLOCKS` raises it and is
+    # read per call so Studio can set it after import.
     try:
         ceiling = max(1, int(os.environ.get("DG_MAX_BLOCKS", "").strip()))
     except ValueError:

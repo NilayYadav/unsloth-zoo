@@ -7,8 +7,8 @@
 # (at your option) any later version.
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-# The per-turn DiffusionGemma canvas is non-causal, so its compute buffer is
-# ~quadratic: oversized values must defer to the MAXTOK=0 auto-size path or OOM.
+# The visual server checks that an explicit MAXTOK's canvas buffer fits and
+# otherwise auto-sizes no larger than it, so the requested value is passed on.
 
 from __future__ import annotations
 
@@ -20,19 +20,20 @@ from unsloth_zoo.diffusion_studio.visual_engine import _canvas_maxtok
 @pytest.mark.parametrize(
     "value, expected",
     [
-        (0, 0),          # auto-size sentinel stays auto
-        (1, 1),          # small explicit honored
-        (4096, 4096),    # below threshold honored
-        (8192, 8192),    # threshold honored
-        (8193, 0),       # just over -> auto
-        (32768, 0),      # full model context -> auto (avoids the ~77 GB buffer OOM)
-        (262144, 0),     # very large -> auto
+        (0, 0),
+        (-1, 0),
+        (1, 1),
+        (4096, 4096),
+        (8192, 8192),
+        (8193, 8193),
+        (24576, 24576),
+        (65536, 65536),
     ],
 )
-def test_canvas_maxtok_defers_oversized_to_autosize(value, expected):
+def test_canvas_maxtok_passes_the_requested_value(value, expected):
     assert _canvas_maxtok(value) == expected
 
 
 def test_canvas_maxtok_coerces_str():
     assert _canvas_maxtok("4096") == 4096
-    assert _canvas_maxtok("99999") == 0
+    assert _canvas_maxtok("24576") == 24576
