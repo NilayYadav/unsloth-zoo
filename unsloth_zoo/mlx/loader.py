@@ -10438,6 +10438,12 @@ class FastMLXModel:
                 print(f"Unsloth: LoRA adapter detection failed ({e}), falling back to standard load.")
 
         model_type = config_data.get("model_type", "")
+        if dtype is None and target_dtype == mx.float16 and _is_force_float32_arch(model_type):
+            target_dtype = mx.bfloat16
+            print(
+                f"Unsloth: {model_type} overflows float16, so it loads in bfloat16 "
+                f"(emulated on {chip}). Pass dtype='float16' to override."
+            )
 
         is_vlm = False
         force_vlm_text_path = bool(
