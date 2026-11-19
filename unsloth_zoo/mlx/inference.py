@@ -11698,6 +11698,26 @@ INFERENCE_SCOPES = [
 
 
 @contextmanager
+def _random_state_kept_on_error():
+    # A raise inside an mx.compile'd sampler (mlx-lm's top-k check) leaves mx.random.state holding a tracer, and every
+    # later draw in the process then fails; put the key back.
+    try:
+        saved = mx.random.state[0]
+    except Exception:
+        saved = None
+    try:
+        yield
+    except BaseException:
+        if saved is not None:
+            try:
+                mx.eval(mx.random.state)
+            except Exception:
+                high, low = (int(value) for value in saved.tolist())
+                mx.random.seed((high << 32) | low)
+        raise
+
+
+@contextmanager
 def inference_scopes(model, call = None, *, int8_prefill = None, ane_prefill = None, fast_verify = None, on_error = None,
                      _modules = None):
     """Hold the registered scopes that serve `call`, an iterable of call traits; None serves any generation, short of
@@ -11720,6 +11740,7 @@ def inference_scopes(model, call = None, *, int8_prefill = None, ane_prefill = N
         # Held before any scope enters, so a scope that steps aside for it sees it.
         _hold_fast_verify(model, decided)
         stack.callback(_release_fast_verify, model)
+        stack.enter_context(_random_state_kept_on_error())
         for scope in INFERENCE_SCOPES:
             if not scope.admits(call) or (scope.fast_verify and not decided):
                 continue
