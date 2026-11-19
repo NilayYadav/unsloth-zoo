@@ -5080,3 +5080,19 @@ def test_processor_saves_skip_mlx_vlms_uncopyable_detokenizer(tmp_path):
         save(processor, out)
         assert json.loads((out / "processor_config.json").read_text()) == {"processor_class": "Processor", "size": 32}
         assert processor.detokenizer is detokenizer
+
+
+def test_loaded_model_exposes_a_device_for_notebook_inputs():
+    import torch
+    from transformers import BatchEncoding
+    import unsloth_zoo.mlx.loader as loader
+
+    model = types.SimpleNamespace(_is_vlm_model=False)
+    loader._patch_mlx_saving(model, object())
+    inputs = BatchEncoding({"input_ids": torch.tensor([[1, 2]]), "attention_mask": torch.tensor([[1, 1]])}).to(model.device)
+    assert inputs["input_ids"].tolist() == [[1, 2]]
+    assert torch.tensor([3]).to(model.device).tolist() == [3]
+
+    placed = types.SimpleNamespace(_is_vlm_model=False, device="kept")
+    loader._patch_mlx_saving(placed, object())
+    assert placed.device == "kept"

@@ -8402,10 +8402,21 @@ def _patch_mlx_tokenizer_call(tokenizer):
     cls._unsloth_mlx_apply_chat_template = True
 
 
+def _mlx_input_device():
+    try:
+        import torch
+        return torch.device("cpu")
+    except Exception:
+        return "cpu"
+
+
 def _patch_mlx_saving(model, tokenizer):
     """Attach save/push methods to the model, matching unsloth's CUDA pattern."""
     _patch_mlx_tokenizer_call(tokenizer)
     model._tokenizer = tokenizer
+    if not hasattr(model, "device"):
+        # Notebooks place inputs with `.to(model.device)`; MLX generate reads them from host memory.
+        model.device = _mlx_input_device()
     model.generate               = types.MethodType(_mlx_generate, model)
     from .generate import fast_generate
     model.fast_generate          = types.MethodType(fast_generate, model)
