@@ -16894,6 +16894,14 @@ def _prepare_mlx_gguf_export_directory(
                 json.dump(config, f, indent=4)
         return 0
 
+    # The MoE pass finds stacked experts by their MLX module path, so their names are left to it.
+    held_back = (
+        _mlx_stacked_expert_tensor_names(
+            model, {name for file in path.glob("*.safetensors") for name in mx.load(str(file))}
+        )
+        if sanitize_steps
+        else {}
+    )
     rewritten = 0
     name_map = {}
     for file in sorted(path.glob("*.safetensors")):
@@ -16905,7 +16913,7 @@ def _prepare_mlx_gguf_export_directory(
             # An empty measurement is ambiguous: an already-converted MLX source shifts nothing at load yet still holds shifted norms.
             offset = 1.0 if not norm_offsets else norm_offsets.get(name, 0.0)
             new_name, tensor, changed = _rewrite_mlx_vlm_tensor_for_gguf(
-                name, tensor, sanitize_steps, offset
+                name, tensor, [] if name in held_back else sanitize_steps, offset
             )
             # The replay cannot observe a gate spanning the whole checkpoint, so a value it leaves alone is one the measurement must recover.
             if (

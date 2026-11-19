@@ -1298,6 +1298,48 @@ def test_gguf_export_restores_the_hf_norm_convention(tmp_path, gate):
         assert mutils._mlx_arrays_match(value, expected), key
 
 
+def test_vlm_gguf_first_pass_leaves_stacked_experts_to_the_moe_pass(tmp_path, monkeypatch):
+    """The MoE pass matches stacked experts to the model's switch modules by their MLX path; renamed first, a VLM MoE
+    (Qwen3.5-MoE) reached llama.cpp as switch_mlp and failed with Can not map tensor."""
+    import unsloth_zoo.mlx.utils as mutils
+
+    mx = mutils.mx
+    expert = "language_model.model.layers.0.mlp.switch_mlp.down_proj"
+
+    class SwitchLinear:
+        num_experts = 2
+        weight = mx.zeros((2, 4, 3))
+
+    class VlmMoe:
+        def named_modules(self):
+            yield "", self
+            yield expert, SwitchLinear()
+
+        def sanitize(self, weights):
+            return {
+                key.replace("model.language_model.", "language_model.model.", 1): value
+                for key, value in weights.items()
+            }
+
+    model = VlmMoe()
+    monkeypatch.setattr(
+        mutils, "_build_mlx_vlm_sanitize_pipelines", lambda config, model: [[(model, None)]]
+    )
+    export = tmp_path / "export"
+    _write_weights(mx, export, {
+        f"{expert}.weight": mx.arange(24, dtype=mx.float32).reshape(2, 4, 3),
+        "language_model.model.layers.0.self_attn.q_proj.weight": mx.ones((4, 4)),
+    })
+    (export / "config.json").write_text(json.dumps({"model_type": "stub"}))
+
+    mutils._prepare_mlx_gguf_export_directory(export, model=model, norm_offsets={})
+
+    exported = mx.load(str(export / "model.safetensors"))
+    assert sorted(exported) == [
+        f"{expert}.weight", "model.language_model.layers.0.self_attn.q_proj.weight",
+    ]
+
+
 def test_gguf_export_does_not_subtract_a_replayed_offset_twice(tmp_path):
     import unsloth_zoo.mlx.utils as mutils
 
