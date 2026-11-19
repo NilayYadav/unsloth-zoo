@@ -982,6 +982,36 @@ def test_bound_save_pretrained_defaults_to_full_save_without_lora(
     }
 
 
+@pytest.mark.parametrize("save_method", ["merged_16bit", "merged_4bit", "lora"])
+def test_push_to_hub_merged_honors_save_method(monkeypatch, tmp_path, save_method):
+    import unsloth_zoo.mlx.loader as loader
+    import unsloth_zoo.mlx.utils as mutils
+
+    calls = {}
+
+    def fake_save_pretrained_merged(model, tokenizer, save_directory, **kwargs):
+        calls["save_directory"] = Path(save_directory)
+        calls["kwargs"] = kwargs
+
+    monkeypatch.setattr(mutils, "collect_mlx_lora_adapter_tensors", lambda model: {"a": 1})
+    monkeypatch.setattr(mutils, "save_pretrained_merged", fake_save_pretrained_merged)
+    monkeypatch.setattr(mutils, "push_to_hub_merged", lambda *a, **k: calls.setdefault("bypassed", True))
+
+    model = types.SimpleNamespace(_tokenizer=object())
+    loader._mlx_push_to_hub_merged(
+        model, "user/model", save_method=save_method, token="hf_token",
+        save_directory=str(tmp_path),
+    )
+
+    assert calls == {
+        "save_directory": tmp_path,
+        "kwargs": {
+            "save_method": save_method, "push_to_hub": True,
+            "token": "hf_token", "repo_id": "user/model",
+        },
+    }
+
+
 def test_adapter_bnb_base_remap_defaults_to_mlx_4bit_quantization(
     monkeypatch,
     tmp_path,
