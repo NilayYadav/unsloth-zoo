@@ -2578,6 +2578,28 @@ def test_shared_prefixes_live_only_while_their_rows_can_decode(monkeypatch, layo
     assert added == [(ids, ids) for ids in order] and peak[0] <= 2 * 4
 
 
+@pytest.mark.parametrize("installed, serves", [("0.31.3", False), ("0.32.0", True), ("0.32.2", True)])
+def test_batched_draws_serve_only_an_mlx_lm_that_samples_the_batch_at_once(monkeypatch, installed, serves):
+    # mlx-lm 0.31.3 (all Python 3.10 gets) calls the sampler once per row, which one batched draw cannot match.
+    import importlib.metadata
+    from unsloth_zoo.mlx import generate as engine
+
+    monkeypatch.setattr(engine, "_batched_draws_match", lambda: True)
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: installed)
+    cached = getattr(engine, "_mlx_lm_samples_the_batch_at_once", None)
+    generator = types.SimpleNamespace(
+        _generation_batch=types.SimpleNamespace(uids=[0, 1]),
+        _prompt_batch=types.SimpleNamespace(split=lambda indices: None),
+    )
+    try:
+        if cached is not None:
+            cached.cache_clear()
+        assert engine._BatchedDraws.serves(generator) is serves
+    finally:
+        if cached is not None:
+            cached.cache_clear()
+
+
 @pytest.mark.skipif(importlib.import_module("mlx_simulation").mlx_is_simulated(), reason="needs real mlx.random")
 @pytest.mark.parametrize("rows_reduce_alike", [True, False])
 def test_batched_draws_match_per_row_samplers_on_either_reduction_route(monkeypatch, rows_reduce_alike):
