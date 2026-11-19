@@ -357,15 +357,15 @@ def test_text_generate_honors_do_sample_false(monkeypatch):
         top_p=0.9,
         top_k=32,
         eos_token_id=5,
-        max_length=4,
+        max_new_tokens=2,
     )
 
     assert isinstance(out, torch.Tensor)
     assert out.dtype == torch.long
-    assert out.tolist() == [[1, 2, 9, 5]]
-    assert out.shape == (1, 4)
-    assert out[:, 2:].tolist() == [[9, 5]]
-    assert to_py_obj(out) == [[1, 2, 9, 5]]
+    assert out.tolist() == [[0, 1, 2, 0, 9, 5]]
+    assert out.shape == (1, 6)
+    assert out[:, 4:].tolist() == [[9, 5]]
+    assert to_py_obj(out) == [[0, 1, 2, 0, 9, 5]]
     assert calls["sampler"] == {
         "temp": 0.0,
         "top_p": 0.0,
@@ -5080,3 +5080,36 @@ def test_processor_saves_skip_mlx_vlms_uncopyable_detokenizer(tmp_path):
         save(processor, out)
         assert json.loads((out / "processor_config.json").read_text()) == {"processor_class": "Processor", "size": 32}
         assert processor.detokenizer is detokenizer
+
+
+def test_text_generate_batches_left_padded_rows_and_return_sequences(monkeypatch):
+    import mlx_lm
+    import unsloth_zoo.mlx.loader as loader
+
+    prompts = []
+
+    def fake_stream_generate(_model, _tokenizer, prompt, max_tokens=None, **kwargs):
+        prompts.append(list(prompt))
+        for token in ([6, 2] if prompt[-1] == 5 else [8, 9, 10, 11])[:max_tokens]:
+            yield types.SimpleNamespace(token=token)
+
+    monkeypatch.setattr(mlx_lm, "stream_generate", fake_stream_generate)
+    tokenizer = types.SimpleNamespace(bos_token=None, eos_token_ids={2}, pad_token_id=0)
+    model = types.SimpleNamespace(_tokenizer=tokenizer, _is_vlm_model=False)
+
+    out = loader._mlx_generate(model, input_ids=[[0, 0, 4, 5], [3, 6, 7, 7]],
+                               attention_mask=[[0, 0, 1, 1], [1, 1, 1, 1]], max_new_tokens=3)
+    assert out.tolist() == [[0, 0, 4, 5, 6, 2, 0], [3, 6, 7, 7, 8, 9, 10]]
+    assert prompts == [[4, 5], [3, 6, 7, 7]]
+
+    out = loader._mlx_generate(model, input_ids=[[4, 5]], max_new_tokens=3, num_return_sequences=2)
+    assert out.tolist() == [[4, 5, 6, 2], [4, 5, 6, 2]]
+
+    out = loader._mlx_generate(model, input_ids=[[0, 4, 5], [3, 7, 7]], attention_mask=[[0, 1, 1], [1, 1, 1]], max_length=5)
+    assert out.tolist() == [[0, 4, 5, 6, 2], [3, 7, 7, 8, 9]]
+
+    out = loader._mlx_generate(model, input_ids=[[0, 0, 4, 5]], attention_mask=[[0, 0, 1, 1]], max_new_tokens=3)
+    assert out.tolist() == [[0, 0, 4, 5, 6, 2]]
+
+    with pytest.raises(ValueError, match="streamer"):
+        loader._mlx_generate(model, input_ids=[[4, 5], [7, 7]], streamer=object())

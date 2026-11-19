@@ -7950,7 +7950,10 @@ def _mlx_apply_attention_mask(prompt_ids, attention_mask):
 
 def _mlx_generate_output(prompt_ids, generated_ids):
     """Build a Transformers-friendly batched generate return value."""
-    sequences = [list(prompt_ids) + list(generated_ids)]
+    return _mlx_token_rows([list(prompt_ids) + list(generated_ids)])
+
+
+def _mlx_token_rows(sequences):
     try:
         # Broad except: a broken torch install (bad native libs) raises OSError or RuntimeError, not ImportError; fall
         # back to numpy so MLX generation keeps working.
@@ -8155,6 +8158,58 @@ def _mlx_generate_vlm(self, *args, **kwargs):
     return _mlx_generate_output(prompt_ids, generated_ids)
 
 
+def _mlx_prompt_rows(prompt):
+    if isinstance(prompt, dict):
+        if prompt.get("pixel_values") is not None:
+            return None
+        prompt = prompt.get("input_ids")
+    if hasattr(prompt, "tolist"):
+        prompt = prompt.tolist()
+    if not isinstance(prompt, (list, tuple)) or not prompt:
+        return None
+    if isinstance(prompt[0], (list, tuple)):
+        return [list(row) for row in prompt]
+    return [list(prompt)]
+
+
+def _mlx_has_padding(attention_mask):
+    if hasattr(attention_mask, "tolist"):
+        attention_mask = attention_mask.tolist()
+    if not isinstance(attention_mask, (list, tuple)):
+        return False
+    rows = attention_mask if attention_mask and isinstance(attention_mask[0], (list, tuple)) else [attention_mask]
+    return any(int(keep) == 0 for row in rows for keep in row)
+
+
+def _mlx_generate_rows(model, rows, attention_mask, num_return_sequences, kwargs):
+    if kwargs.get("streamer") is not None and len(rows) * num_return_sequences > 1:
+        raise ValueError("Unsloth MLX: a streamer only supports batch size 1.")
+    masks = attention_mask.tolist() if hasattr(attention_mask, "tolist") else attention_mask
+    if masks is not None and masks and not isinstance(masks[0], (list, tuple)):
+        masks = [masks]
+    if masks is not None and len(masks) != len(rows):
+        raise ValueError("Unsloth MLX: attention_mask must have one row per input_ids row.")
+    if len({len(row) for row in rows}) > 1:
+        raise ValueError("Unsloth MLX: batched input_ids rows must be padded to one length.")
+    max_length = kwargs.pop("max_length", None)
+    if max_length is not None and kwargs.get("max_new_tokens") is None and kwargs.get("max_tokens") is None:
+        kwargs["max_new_tokens"] = max(0, int(max_length) - len(rows[0]))
+    generated = []
+    for index, row in enumerate(rows):
+        kept = row if masks is None else [token for token, keep in zip(row, masks[index]) if keep]
+        for _ in range(num_return_sequences):
+            output = _mlx_generate(model, input_ids=[kept], **kwargs)
+            generated.append((row, output.tolist()[0][len(kept):]))
+    pad = kwargs.get("pad_token_id")
+    if pad is None:
+        pad = getattr(model._tokenizer, "pad_token_id", None)
+    if pad is None:
+        eos = _mlx_eos_token_id_set(kwargs.get("eos_token_id")) or getattr(model._tokenizer, "eos_token_ids", None)
+        pad = min(eos) if eos else 0
+    longest = max(len(new) for _, new in generated)
+    return _mlx_token_rows([row + new + [int(pad)] * (longest - len(new)) for row, new in generated])
+
+
 def _mlx_generate(self, *args, **kwargs):
     """HF-style text generate() shim backed by mlx-lm stream_generate."""
     from mlx_lm import stream_generate
@@ -8179,6 +8234,12 @@ def _mlx_generate(self, *args, **kwargs):
                 "Unsloth MLX: pass prompt input either positionally or as "
                 "input_ids, not both."
             )
+    num_return_sequences = int(kwargs.pop("num_return_sequences", None) or 1)
+    rows = _mlx_prompt_rows(prompt)
+    if rows is not None and kwargs.get("pixel_values") is None and (
+        len(rows) > 1 or num_return_sequences > 1 or _mlx_has_padding(attention_mask)
+    ):
+        return _mlx_generate_rows(self, rows, attention_mask, num_return_sequences, kwargs)
     prompt_ids = _mlx_prompt_to_ids(prompt)
     prompt_ids = _mlx_apply_attention_mask(prompt_ids, attention_mask)
     if isinstance(prompt_ids, str):
