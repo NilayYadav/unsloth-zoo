@@ -18838,11 +18838,14 @@ def save_merged_model(model, tokenizer, path, dequantize=False,
 
     # Fuse LoRA weights into base model (mlx-lm pattern)
     model.eval()
-    fused_linears = [
-        (n, _fuse_mlx_module(m, dequantize))
-        for n, m in model.named_modules()
-        if hasattr(m, "fuse")
-    ]
+    lora_modules = [(n, m) for n, m in model.named_modules() if hasattr(m, "fuse")]
+    # Fusing into a quantized base requantizes the LoRA delta, so the adapters go back after the save.
+    unfuse_after_save = (
+        lora_modules
+        if lora_modules and not dequantize and _model_has_quantized_module(model)
+        else None
+    )
+    fused_linears = [(n, _fuse_mlx_module(m, dequantize)) for n, m in lora_modules]
     if fused_linears:
         model.update_modules(tree_unflatten(fused_linears))
 
@@ -18891,6 +18894,8 @@ def save_merged_model(model, tokenizer, path, dequantize=False,
         if restore_after_save is not None:
             _restore_mlx_model_state(caller_model, restore_after_save)
             restore_after_save = None
+        if unfuse_after_save is not None:
+            caller_model.update_modules(tree_unflatten(unfuse_after_save))
 
     if config:
         is_vlm = _is_vlm_model(model) or _has_vision_config(config)

@@ -293,6 +293,37 @@ def test_merged_4bit_save_removes_a_config_it_had_to_invent(tmp_path):
     assert not hasattr(model, "_config")
 
 
+def test_merged_4bit_save_on_a_quantized_base_keeps_the_lora(tmp_path):
+    """Fusing into a quantized base requantizes the LoRA delta; left in place, a later merged_16bit or GGUF export
+    loses most of the fine-tune."""
+    from mlx_lm.tuner.utils import linear_to_lora_layers
+
+    from unsloth_zoo.mlx.utils import save_merged_model
+
+    model = _tiny_llama(mx.float32)
+    nn.quantize(model, group_size=64, bits=4)
+    model._config = _tiny_llama_config()
+    model.freeze()
+    linear_to_lora_layers(
+        model, 2, {"rank": 4, "scale": 2.0, "dropout": 0.0,
+                   "keys": ["self_attn.q_proj", "mlp.down_proj"]},
+    )
+    mx.random.seed(0)
+    for _, module in model.named_modules():
+        if hasattr(module, "lora_b"):
+            module.lora_b = mx.random.normal(module.lora_b.shape) * 0.05
+    tokens = mx.array([[1, 2, 3]])
+    before = model(tokens)
+    mx.eval(before)
+
+    save_merged_model(model, _StubTokenizer(), tmp_path / "merged_4bit")
+
+    assert all(hasattr(model.model.layers[i].self_attn.q_proj, "lora_a") for i in range(2))
+    after = model(tokens)
+    mx.eval(after)
+    assert mx.array_equal(before, after)
+
+
 def test_a_failed_merged_4bit_save_still_returns_the_model(tmp_path, monkeypatch):
     """The restore must cover the quantize, not just the write: an OOM there fails after modules are replaced, so a success-only restore hands back a 4-bit model."""
     import mlx_lm.utils
