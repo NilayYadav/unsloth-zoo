@@ -1153,9 +1153,44 @@ def gradient_checkpointing_bypassed():
         _GC_BYPASS_DEPTH.set(depth)
 
 
+_GC_DROPOUT_KEY = contextvars.ContextVar("unsloth_mlx_gc_dropout_key", default=None)
+_dropout_call = getattr(getattr(nn, "Dropout", None), "__call__", None)
+
+
+def _keyed_dropout_call(self, x):
+    keys = _GC_DROPOUT_KEY.get()
+    if keys is None or self._p_1 == 1 or not self.training:
+        return _dropout_call(self, x)
+    keys[0], key = mx.random.split(keys[0])
+    mask = mx.random.bernoulli(self._p_1, x.shape, key=key)
+    return (mask * x) * (1 / self._p_1)
+
+
+def _layer_checkpoint(layer, fn):
+    # The backward replays the layer; a key fixed at forward time makes its dropouts redraw the masks the loss saw.
+    if not any(
+        isinstance(module, nn.Dropout) and module._p_1 < 1 and module.training
+        for module in layer.modules()
+    ):
+        return mx.checkpoint(fn)
+
+    def keyed(params, key, *args, **kwargs):
+        token = _GC_DROPOUT_KEY.set([mx.stop_gradient(key)])
+        try:
+            return fn(params, *args, **kwargs)
+        finally:
+            _GC_DROPOUT_KEY.reset(token)
+
+    key = mx.random.randint(0, 2**31 - 1, (2,)).astype(mx.uint32)
+    checkpointed = mx.checkpoint(keyed)
+    return lambda params, *args, **kwargs: checkpointed(params, key, *args, **kwargs)
+
+
 def _patch_layer_class_for_gc(layer_cls):
     if getattr(layer_cls, '_orig_call', None) is not None:
         return  # already patched
+    if _dropout_call is not None:
+        nn.Dropout.__call__ = _keyed_dropout_call
     layer_cls._orig_call = layer_cls.__call__
     fn = layer_cls.__call__
 
@@ -1189,7 +1224,7 @@ def _patch_layer_class_for_gc(layer_cls):
                 wrote = any(writes)
                 # Writes go first: mx.checkpoint misaligns cotangents after an output with no gradient (an index).
                 return (writes, out) if wrote else out
-            out = mx.checkpoint(inner_fn)(
+            out = _layer_checkpoint(self, inner_fn)(
                 self.trainable_parameters(), *args, **kwargs)
             if not wrote:
                 return out
@@ -1216,7 +1251,7 @@ def _patch_layer_class_for_gc(layer_cls):
 
         repeated = []
         args, borrowed = _tie_to_hidden_state(args, slot.borrow())
-        out, recorded = mx.checkpoint(inner_fn)(
+        out, recorded = _layer_checkpoint(self, inner_fn)(
             self.trainable_parameters(), borrowed, *args, **kwargs)
         leaves = [leaf for _, leaf in mlx.utils.tree_flatten(out)]
         slot.install(tuple(state if index is None else leaves[index] for state, index in zip(recorded, repeated)))
