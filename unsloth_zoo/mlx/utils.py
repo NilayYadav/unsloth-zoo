@@ -5246,6 +5246,26 @@ def encode_mlx_text(tokenizer, text, state=None, *, add_special_tokens=None):
     return _guard_host_token_output(encoded, state, "the tokenizer")
 
 
+_MLX_SPECIAL_ENDINGS = weakref.WeakKeyDictionary()
+
+
+# CUDA SFT's rule: text already ending in EOS or any special token keeps its own ending.
+def mlx_text_needs_eos(tokenizer, text):
+    try:
+        endings = _MLX_SPECIAL_ENDINGS[tokenizer]
+    except (KeyError, TypeError):
+        endings = [t for t in (getattr(tokenizer, "all_special_tokens", None) or []) if isinstance(t, str) and t]
+        endings += [
+            str(t) for t in (getattr(tokenizer, "added_tokens_decoder", None) or {}).values()
+            if getattr(t, "special", False) and str(t)
+        ]
+        eos = getattr(tokenizer, "eos_token", None)
+        endings = tuple(endings + [eos] if isinstance(eos, str) and eos else endings)
+        with contextlib.suppress(TypeError):
+            _MLX_SPECIAL_ENDINGS[tokenizer] = endings
+    return not (isinstance(text, str) and endings and text.rstrip().endswith(endings))
+
+
 def _raise_mlx_chat_template_error(target, *, is_vlm=False):
     if is_vlm:
         _raise_vlm_chat_template_error(target)
@@ -6019,7 +6039,7 @@ def _tokenize_mlx_prompt_completion(
         tokenizer,
         list(encoded.input_ids[:encoded.prompt_length]),
         list(encoded.input_ids),
-        append_eos=append_eos,
+        append_eos=append_eos and mlx_text_needs_eos(tokenizer, prompt + completion),
         completion_only_loss=completion_only_loss,
     )
 
@@ -12610,6 +12630,7 @@ def _prepare_dataset(dataset, tokenizer, dataset_text_field="text",
             if (
                 self._eos_id is not None
                 and (not encoded or encoded[-1] != self._eos_id)
+                and mlx_text_needs_eos(self.tokenizer, item[self.text_key])
             ):
                 encoded = list(encoded) + [int(self._eos_id)]
             return (encoded, 0)
@@ -13416,7 +13437,7 @@ def _iter_tokenized_text_rows(dataset, tokenizer, dataset_text_field="text",
         )
         for text in texts:
             ids = encode_mlx_text(tokenizer, text)
-            if eos_id is not None and (not ids or ids[-1] != eos_id):
+            if eos_id is not None and (not ids or ids[-1] != eos_id) and mlx_text_needs_eos(tokenizer, text):
                 ids = list(ids) + [int(eos_id)]
             if max_seq_length is not None:
                 ids = list(ids)[:max_seq_length]
@@ -13771,7 +13792,7 @@ def _iter_lazy_tokenized_text_rows(
                 continue
             for text in texts:
                 ids = list(encode_mlx_text(tokenizer, text, state=state))
-                if eos_id is not None and (not ids or ids[-1] != eos_id):
+                if eos_id is not None and (not ids or ids[-1] != eos_id) and mlx_text_needs_eos(tokenizer, text):
                     ids.append(int(eos_id))
                 if max_seq_length is not None:
                     ids = ids[:max_seq_length]

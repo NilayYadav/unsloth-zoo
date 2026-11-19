@@ -385,7 +385,10 @@ class _MLXTokenizedDatasetView:
 
         encoded = encode_mlx_text(self._tokenizer, texts[0])
         eos_id = getattr(self._tokenizer, "eos_token_id", None)
-        if self._append_eos and eos_id is not None and (not encoded or encoded[-1] != eos_id):
+        if (
+            self._append_eos and eos_id is not None and (not encoded or encoded[-1] != eos_id)
+            and mlx_text_needs_eos(self._tokenizer, texts[0])
+        ):
             encoded = list(encoded) + [eos_id]
         if self._max_seq_length and len(encoded) > self._max_seq_length:
             encoded = encoded[:self._max_seq_length]
@@ -578,6 +581,7 @@ from .utils import (
     normalize_mlx_chat_template,
     normalize_vlm_processor_chat_template,
     encode_mlx_text,
+    mlx_text_needs_eos,
     _get_vlm_ignore_token_ids,
     collect_mlx_texts,
     save_lora_adapters,
@@ -1520,7 +1524,7 @@ class MLXTrainingConfig:
     wired_limit_gb: float | None = None  # None = min(recommended working set, memory limit); <= 0 disables
     disable_memory_limits: bool = False
     cast_norm_output_to_input_dtype: bool = True  # fp32 norm storage/math, bf16/fp16 downstream activations
-    append_eos: bool = True  # True = mlx-lm parity; Unsloth sets False (template owns EOS)
+    append_eos: bool = True  # EOS on text rows not already ending in EOS or another special token
 
     # VLM / completion masking
     train_on_completions: bool = False  # Mask prompt tokens in loss
@@ -10178,7 +10182,10 @@ def _create_labeled_batches(dataset, tokenizer, mask_fn, batch_size,
     def _process_text(text):
         encoded = encode_mlx_text(tokenizer, text)
         # Mirror `_prepare_dataset`'s EOS contract; mismatch desyncs labeled vs unlabeled.
-        if append_eos and eos_id is not None and (not encoded or encoded[-1] != eos_id):
+        if (
+            append_eos and eos_id is not None and (not encoded or encoded[-1] != eos_id)
+            and mlx_text_needs_eos(tokenizer, text)
+        ):
             encoded.append(eos_id)
         if len(encoded) > max_seq_length:
             encoded = encoded[:max_seq_length]
