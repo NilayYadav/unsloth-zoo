@@ -5727,7 +5727,7 @@ def render_mlx_chat_example(
         if _looks_like_mlx_chat_messages(value):
             return _render_mlx_messages(target, value, is_vlm=is_vlm)
 
-    for key in ("text", "content", "instruction"):
+    for key in ("text", "content"):
         value = item.get(key)
         if isinstance(value, str) and value:
             return value
