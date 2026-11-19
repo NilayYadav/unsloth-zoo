@@ -1271,6 +1271,16 @@ def _require_complete_resume_checkpoint(resume_from):
         )
 
 
+def _last_checkpoint(output_dir):
+    found = [
+        child for child in Path(output_dir).glob("checkpoint-*")
+        if child.is_dir() and re.fullmatch(r"checkpoint-\d+", child.name)
+    ]
+    if not found:
+        raise ValueError(f"No valid checkpoint found in output directory ({output_dir})")
+    return str(max(found, key=lambda child: int(child.name.removeprefix("checkpoint-"))))
+
+
 def _prune_stale_checkpoints(output_dir, save_total_limit, keep_step=None):
     """Keep the newest ``save_total_limit`` checkpoint-* dirs, never rotating out ``keep_step`` (as HF's
     _rotate_checkpoints does for best_model_checkpoint); -1, 0 or None means no limit."""
@@ -5211,7 +5221,11 @@ class MLXTrainer:
         # cannot fail, while this can block or propagate an interrupt; running it
         # first would leave a stale stop latched for the next train() call.
         self._close_active_batch_iterator()
-        # Stash for _train_inner. None = fresh start, a path = resume.
+        # Stash for _train_inner. None = fresh start, a path = resume; True = newest checkpoint, as in HF.
+        if isinstance(resume_from_checkpoint, bool):
+            resume_from_checkpoint = (
+                _last_checkpoint(self.args.output_dir) if resume_from_checkpoint else None
+            )
         self._resume_from_checkpoint = resume_from_checkpoint
         self._ensure_distributed()
         args = self.args
