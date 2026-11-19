@@ -1036,6 +1036,44 @@ def test_adapter_bnb_base_remap_defaults_to_mlx_4bit_quantization(
     }
 
 
+@pytest.mark.parametrize("explicit", [None, "{{ 'explicit' }}"])
+def test_adapter_reload_keeps_the_chat_template_saved_with_it(monkeypatch, tmp_path, explicit):
+    """A get_chat_template() template saved with tokenizer.save_pretrained("lora_model") was dropped on reload for the
+    base repo's, so inference prompts no longer matched training."""
+    import mlx_lm.utils as mlx_lm_utils
+    import unsloth_zoo.mlx.loader as loader
+
+    adapter_dir = tmp_path / "adapter"
+    adapter_dir.mkdir()
+    (adapter_dir / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "unsloth/tinyllama", "fine_tune_type": "lora"}),
+        encoding="utf-8",
+    )
+    (adapter_dir / "chat_template.jinja").write_text("{{ 'trained' }}", encoding="utf-8")
+
+    calls = {}
+    original_from_pretrained = loader.FastMLXModel.from_pretrained
+
+    class StopAdapterLoad(RuntimeError):
+        pass
+
+    def fake_recursive_from_pretrained(model_name, **kwargs):
+        calls["kwargs"] = kwargs
+        raise StopAdapterLoad("Unsloth: stop after recursive adapter base load")
+
+    monkeypatch.setattr(
+        mlx_lm_utils, "_download", lambda model_name, revision=None, allow_patterns=None: adapter_dir
+    )
+    monkeypatch.setattr(
+        loader.FastMLXModel, "from_pretrained", staticmethod(fake_recursive_from_pretrained)
+    )
+
+    with pytest.raises(StopAdapterLoad):
+        original_from_pretrained(str(adapter_dir), chat_template=explicit)
+
+    assert calls["kwargs"]["chat_template"] == (explicit or "{{ 'trained' }}")
+
+
 def test_lora_push_uses_lora_adapter_hub_path(monkeypatch, tmp_path):
     import unsloth_zoo.mlx.utils as mutils
 

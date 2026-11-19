@@ -2190,6 +2190,21 @@ def _read_json_file(path):
     return data if isinstance(data, dict) else {}
 
 
+def _saved_chat_template(path):
+    try:
+        with open(os.path.join(path, "chat_template.jinja"), "r", encoding="utf-8") as file:
+            return file.read() or None
+    except OSError:
+        pass
+    for name in ("chat_template.json", "tokenizer_config.json"):
+        template = _read_json_file(os.path.join(path, name)).get("chat_template")
+        if isinstance(template, dict):
+            template = template.get("default")
+        if isinstance(template, str) and template:
+            return template
+    return None
+
+
 def _is_processor_like_class(obj):
     """True only for a class Transformers treats as a processing component; a repo-chosen name plus getattr and a call
     could reach callables like transformers.pipeline, which takes trust_remote_code."""
@@ -10209,6 +10224,11 @@ class FastMLXModel:
                         float32_mixed_precision=float32_mixed_precision,
                         pipeline_group=pipeline_group,
                         tensor_group=tensor_group,
+                        # The template saved beside the adapter is the one it was trained with.
+                        chat_template=(
+                            chat_template if chat_template is not None
+                            else _saved_chat_template(local_path)
+                        ),
                         **(
                             {"mlx_quantization_config": adapter_mlx_quant_config}
                             if adapter_mlx_quant_config is not None
