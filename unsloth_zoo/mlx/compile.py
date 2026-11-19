@@ -6551,6 +6551,10 @@ def _install_idefics_family_compile_patches():
                 output_hidden_states=True,
             )
             image_features = self.connector(pooler_output.astype(flat_pixel_values.dtype))
+            # Upstream drops all-zero padding images; move them last instead so a ragged row cannot shift the next rows.
+            real = (flat_pixel_values != 0).reshape(batch_size * num_images, -1).any(axis=-1)
+            slot = mx.arange(batch_size * num_images)
+            image_features = image_features[mx.argsort(mx.where(real, slot, slot + batch_size * num_images))]
 
         final_inputs_embeds = self._prepare_inputs_for_multimodal(
             image_features,
