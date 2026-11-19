@@ -8155,6 +8155,20 @@ def _mlx_generate_vlm(self, *args, **kwargs):
     return _mlx_generate_output(prompt_ids, generated_ids)
 
 
+def _mlx_temperature_first_sampler(make_sampler, *, temp, top_p, min_p, top_k):
+    if temp <= 0:
+        return make_sampler(temp=temp, top_p=top_p, min_p=min_p, top_k=top_k)
+    import mlx.core as mx
+    # transformers scales by temperature before top-k / top-p / min-p; mlx-lm filters first and scales at the draw.
+    draw = make_sampler(temp=1.0, top_p=top_p, min_p=min_p, top_k=top_k)
+
+    def sampler(logprobs):
+        scaled = logprobs / temp
+        return draw(scaled - mx.logsumexp(scaled, axis=-1, keepdims=True))
+
+    return sampler
+
+
 def _mlx_generate(self, *args, **kwargs):
     """HF-style text generate() shim backed by mlx-lm stream_generate."""
     from mlx_lm import stream_generate
@@ -8237,7 +8251,8 @@ def _mlx_generate(self, *args, **kwargs):
         top_p = 0.0
         min_p = 0.0
         top_k = 0
-    sampler = sampler or make_sampler(
+    sampler = sampler or _mlx_temperature_first_sampler(
+        make_sampler,
         temp=float(temp),
         top_p=top_p,
         min_p=min_p,
