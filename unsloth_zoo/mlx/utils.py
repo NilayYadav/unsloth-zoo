@@ -16441,7 +16441,7 @@ def _get_mlx_vlm_model_sanitize_pipelines(model):
     pipelines = [model_step] if model_step else []
 
     extra_steps = []
-    for attr in ("thinker", "vision_tower", "vision_model", "vision_encoder", "visual"):
+    for attr in ("thinker", "vision_tower", "vision_model", "vision_encoder", "visual", "language_model"):
         _add_mlx_vlm_sanitize_step(extra_steps, getattr(model, attr, None))
 
     thinker = getattr(model, "thinker", None)
@@ -16590,6 +16590,11 @@ def _vlm_gguf_name_candidates(name):
     return candidates
 
 
+def _is_mlx_conv1d_weight(name):
+    # LFM2's short conv is conv.conv.weight; llama.cpp squeezes its axis 1, so it must be back in HF layout.
+    return "depthwise_conv1d.weight" in name or name.endswith(".conv.weight")
+
+
 def _vlm_gguf_layout_candidates(name, tensor):
     """Return candidates that only move axes, named apart so the caller can tell which one won: equal-sized axis
     permutations leave the shape unchanged, and the MoE pass would move them a second time."""
@@ -16598,7 +16603,7 @@ def _vlm_gguf_layout_candidates(name, tensor):
         return [mx.transpose(tensor, (0, 4, 1, 2, 3))]
     if len(shape) == 4:
         return [mx.transpose(tensor, (0, 3, 1, 2))]
-    if len(shape) == 3 and "depthwise_conv1d.weight" in name:
+    if len(shape) == 3 and _is_mlx_conv1d_weight(name):
         return [mx.transpose(tensor, (0, 2, 1))]
     return []
 
@@ -16619,7 +16624,7 @@ def _has_vlm_gguf_tensor_candidate(name, tensor):
     """Return whether a tensor shape can require HF-layout recovery."""
     shape = getattr(tensor, "shape", ())
     if len(shape) in (4, 5) or (
-        len(shape) == 3 and "depthwise_conv1d.weight" in name
+        len(shape) == 3 and _is_mlx_conv1d_weight(name)
     ):
         return True
     if len(shape) == 1:
@@ -16872,8 +16877,8 @@ def _prepare_mlx_gguf_export_directory(
     relaid_out=None,
 ):
     """Restore HF tensor names, layouts and norm convention in the export dir; replay_sanitizers gates VLM-only
-    name/layout inversion while the norm fix always runs; norm_offsets is shared by every pass and relaid_out
-    collects names whose axes were moved."""
+    name/layout inversion (text models only replay conv layouts) while the norm fix always runs; norm_offsets is
+    shared by every pass and relaid_out collects names whose axes were moved."""
     path = Path(path)
     config_path = path / "config.json"
     if not config_path.exists():
@@ -16886,9 +16891,10 @@ def _prepare_mlx_gguf_export_directory(
         if replay_sanitizers
         else []
     )
+    conv_steps = [] if replay_sanitizers else _get_mlx_vlm_model_sanitize_pipelines(model)
     if norm_offsets is _UNMEASURED:
         norm_offsets = _mlx_sanitizer_norm_offsets(model)
-    if not sanitize_steps and not norm_offsets:
+    if not sanitize_steps and not norm_offsets and not conv_steps:
         if config_changed:
             with open(config_path, "w") as f:
                 json.dump(config, f, indent=4)
@@ -16904,8 +16910,11 @@ def _prepare_mlx_gguf_export_directory(
             original_tensor = tensor
             # An empty measurement is ambiguous: an already-converted MLX source shifts nothing at load yet still holds shifted norms.
             offset = 1.0 if not norm_offsets else norm_offsets.get(name, 0.0)
+            steps = sanitize_steps
+            if conv_steps and len(tensor.shape) == 3 and _is_mlx_conv1d_weight(name):
+                steps = conv_steps
             new_name, tensor, changed = _rewrite_mlx_vlm_tensor_for_gguf(
-                name, tensor, sanitize_steps, offset
+                name, tensor, steps, offset
             )
             # The replay cannot observe a gate spanning the whole checkpoint, so a value it leaves alone is one the measurement must recover.
             if (

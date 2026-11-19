@@ -1298,6 +1298,72 @@ def test_gguf_export_restores_the_hf_norm_convention(tmp_path, gate):
         assert mutils._mlx_arrays_match(value, expected), key
 
 
+class _Lfm2ConvSanitizer:
+    """mlx-lm lfm2: HF stores conv.conv.weight as (C, 1, K), MLX as (C, K, 1)."""
+
+    def sanitize(self, weights):
+        return {
+            key: value.transpose(0, 2, 1)
+            if "conv.weight" in key and value.shape[-1] > value.shape[1]
+            else value
+            for key, value in weights.items()
+        }
+
+
+def test_gguf_export_restores_a_text_model_conv_layout(tmp_path):
+    """llama.cpp's LFM2 converter squeezes axis 1, so an MLX-layout conv yields a GGUF it refuses to load."""
+    import unsloth_zoo.mlx.utils as mutils
+
+    mx = mutils.mx
+    source_weights = {
+        "model.layers.0.conv.conv.weight": mx.arange(6, dtype=mx.float32).reshape(2, 1, 3),
+        "model.layers.0.conv.in_proj.weight": mx.ones((6, 2)),
+    }
+    model = _Lfm2ConvSanitizer()
+    export = tmp_path / "export"
+    _write_weights(mx, export, model.sanitize(dict(source_weights)))
+    (export / "config.json").write_text(json.dumps({"model_type": "lfm2"}))
+
+    rewritten = mutils._prepare_mlx_gguf_export_directory(
+        export, model=model, replay_sanitizers=False, norm_offsets={}
+    )
+
+    assert rewritten == 1
+    exported = mx.load(str(export / "model.safetensors"))
+    for key, value in source_weights.items():
+        assert mutils._mlx_arrays_match(exported[key], value), key
+
+
+def test_vlm_gguf_export_replays_the_language_model_sanitizer(tmp_path):
+    """mlx-vlm applies the language model's own sanitize after the wrapper's (LFM2-VL transposes its convs there), so
+    the replay must include it or the text GGUF keeps the MLX conv layout."""
+    import unsloth_zoo.mlx.utils as mutils
+
+    mx = mutils.mx
+
+    class Lfm2VlModel:
+        language_model = _Lfm2ConvSanitizer()
+
+        def sanitize(self, weights):
+            return {
+                key.replace("model.language_model.", "language_model.model.", 1): value
+                for key, value in weights.items()
+            }
+
+    model = Lfm2VlModel()
+    hf_name = "model.language_model.layers.0.conv.conv.weight"
+    hf_conv = mx.arange(6, dtype=mx.float32).reshape(2, 1, 3)
+    export = tmp_path / "export"
+    _write_weights(mx, export, model.language_model.sanitize(model.sanitize({hf_name: hf_conv})))
+    (export / "config.json").write_text(json.dumps({"model_type": "lfm2_vl"}))
+
+    assert mutils._prepare_mlx_gguf_export_directory(export, model=model, norm_offsets={}) == 1
+
+    exported = mx.load(str(export / "model.safetensors"))
+    assert sorted(exported) == [hf_name]
+    assert mutils._mlx_arrays_match(exported[hf_name], hf_conv)
+
+
 def test_gguf_export_does_not_subtract_a_replayed_offset_twice(tmp_path):
     import unsloth_zoo.mlx.utils as mutils
 
