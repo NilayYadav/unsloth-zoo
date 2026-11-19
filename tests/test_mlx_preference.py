@@ -4517,6 +4517,27 @@ def test_grpo_reward_functions_get_trl_log_metric_and_log_extra():
         "Prompt | Completion | chars | Advantage | length", "'p' | 'ab' | 2.00 | -1.00 | 2", "'p' | 'abcd' | 4.00 | 1.00 | 4"]
 
 
+def test_grpo_async_reward_functions_are_awaited_even_inside_a_running_loop():
+    # TRL 1.x awaits async reward functions; MLX iterated the coroutine and raised TypeError.
+    import asyncio
+    from unsloth_zoo.mlx.grpo import calculate_rewards
+
+    async def judged(completions, **kwargs):
+        await asyncio.sleep(0)
+        return [float(len(c)) for c in completions]
+
+    def score():
+        return calculate_rewards(
+            [judged, lambda completions, **_: [1.0] * len(completions)], [{"prompt": "p"}] * 2, prompts=["p", "p"],
+            completions=["ab", "abcd"], completion_ids=[[1], [2]], trainer_state=None,
+        ).tolist()
+
+    async def inside_a_loop():
+        return score()
+
+    assert score() == asyncio.run(inside_a_loop()) == [[2.0, 1.0], [4.0, 1.0]]
+
+
 def test_grpo_rewards_advantages_and_reward_inputs_follow_trl():
     import numpy as np
     from unsloth_zoo.mlx.grpo import GRPOObjective, calculate_rewards, cut_completion, group_advantages, reward_prompts_and_completions  # noqa: E501

@@ -17,11 +17,14 @@
 """MLX GRPO completions, rewards, advantages and clipped policy objective; mirrors TRL 0.24's GRPOTrainer as Unsloth
 patches it on CUDA (unsloth_zoo.rl_replacements.grpo_compute_loss)."""
 
+import asyncio
 import copy
 import hashlib
+import inspect
 import math
 import os
 import sys
+import threading
 import warnings
 from collections.abc import Mapping
 from contextlib import nullcontext
@@ -150,6 +153,18 @@ def reward_function_name(reward_func):
     return getattr(reward_func, "__name__", type(reward_func).__name__)
 
 
+_REWARD_LOOP = None
+
+
+def _await_reward(coroutine):
+    # A private loop, as TRL's: a notebook already runs one, so asyncio.run would refuse.
+    global _REWARD_LOOP
+    if _REWARD_LOOP is None:
+        _REWARD_LOOP = asyncio.new_event_loop()
+        threading.Thread(target=_REWARD_LOOP.run_forever, daemon=True).start()
+    return asyncio.run_coroutine_threadsafe(coroutine, _REWARD_LOOP).result()
+
+
 def calculate_rewards(
     reward_funcs, rows, *, prompts, completions, completion_ids, trainer_state, log_metric=None, log_extra=None,
 ):
@@ -167,6 +182,8 @@ def calculate_rewards(
             prompts=prompts, completions=completions,
             completion_ids=completion_ids, **kwargs, **loggers,
         )
+        if inspect.isawaitable(output):
+            output = _await_reward(output)
         output = list(output)
         if len(output) != len(rows):
             raise ValueError(
