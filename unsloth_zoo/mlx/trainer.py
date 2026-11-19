@@ -6676,6 +6676,10 @@ class MLXTrainer:
             _restore_trainable_storage_dtypes()
             return grad_norm
 
+        _fp16_backward = any(
+            value.dtype == mx.float16 for _, value in tree_flatten(model.parameters())
+        )
+
         def _loss_and_grad(batch_data):
             compute = (
                 _compiled_loss_fn
@@ -6686,7 +6690,18 @@ class MLXTrainer:
             # Only trainable parameters are traced: any array argument, the model's frozen weights or the batch, would
             # make mx.compile helpers in a frozen vision tower (Gemma 4's attention) skip their cached graphs, unlike
             # GRPO's old log-probs.
-            return nn.value_and_grad(model, lambda: compute(model, *batch))()
+            if not _fp16_backward:
+                return nn.value_and_grad(model, lambda: compute(model, *batch))()
+
+            # No fp16 loss scaler: differentiate the weighted sum so per-token gradients do not underflow.
+            def _summed():
+                scored = compute(model, *batch)
+                return (scored[0].astype(mx.float32) * scored[1].astype(mx.float32), *scored)
+
+            (_, *scored), grad = nn.value_and_grad(model, _summed)()
+            weight = mx.maximum(scored[1].astype(mx.float32), mx.array(1.0, dtype=mx.float32))
+            grad = tree_map(lambda g: (g.astype(mx.float32) / weight).astype(g.dtype), grad)
+            return tuple(scored), grad
 
         def _accumulate_weighted_grad(grad, toks_f, prev_state):
             """Accumulate token-weighted grads without distributed collectives."""
