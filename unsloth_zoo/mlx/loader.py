@@ -8122,6 +8122,8 @@ def _mlx_generate_vlm(self, *args, **kwargs):
     elif batch.get("temperature", None) is None:
         batch.pop("temperature", None)
 
+    batch.setdefault("repetition_context_size", len(prompt_ids) + max_tokens)
+
     _mlx_put_streamer_tokens(streamer, [prompt_ids])
 
     if "prefill_step_size" in batch:
@@ -8248,6 +8250,8 @@ def _mlx_generate(self, *args, **kwargs):
         logits_processors = make_logits_processors(
             logit_bias=kwargs.pop("logit_bias", None),
             repetition_penalty=kwargs.pop("repetition_penalty", None),
+            # HF penalizes every token of the sequence, mlx-lm only the last 20.
+            repetition_context_size=kwargs.pop("repetition_context_size", len(prompt_ids) + max_tokens),
             presence_penalty=kwargs.pop("presence_penalty", None),
             frequency_penalty=kwargs.pop("frequency_penalty", None),
         )

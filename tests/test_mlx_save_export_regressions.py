@@ -5080,3 +5080,31 @@ def test_processor_saves_skip_mlx_vlms_uncopyable_detokenizer(tmp_path):
         save(processor, out)
         assert json.loads((out / "processor_config.json").read_text()) == {"processor_class": "Processor", "size": 32}
         assert processor.detokenizer is detokenizer
+
+
+@pytest.mark.parametrize("vlm", [False, True])
+def test_generate_repetition_penalty_covers_the_whole_sequence(monkeypatch, vlm):
+    import importlib
+    import mlx_lm.sample_utils as sample_utils
+    import unsloth_zoo.mlx.loader as loader
+
+    calls = {}
+
+    def fake_make_logits_processors(**kwargs):
+        calls["processors"] = kwargs
+        return []
+
+    def fake_stream_generate(*args, **kwargs):
+        calls["stream"] = kwargs
+        yield types.SimpleNamespace(token=2, generation_tokens=1)
+
+    monkeypatch.setattr(sample_utils, "make_logits_processors", fake_make_logits_processors)
+    monkeypatch.setattr(importlib.import_module("mlx_vlm" if vlm else "mlx_lm"), "stream_generate", fake_stream_generate)
+    tokenizer = types.SimpleNamespace(bos_token=None, eos_token_ids={2})
+    model = types.SimpleNamespace(_tokenizer=tokenizer, _is_vlm_model=vlm, config=None,
+                                  _processor=types.SimpleNamespace(tokenizer=tokenizer))
+    call = loader._mlx_generate_vlm if vlm else loader._mlx_generate
+    call(model, input_ids=[list(range(3, 43))], max_new_tokens=30, repetition_penalty=1.3)
+    seen = calls["stream"] if vlm else calls["processors"]
+    assert seen["repetition_penalty"] == 1.3
+    assert seen["repetition_context_size"] == 70
