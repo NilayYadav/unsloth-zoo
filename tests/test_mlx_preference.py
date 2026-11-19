@@ -4495,6 +4495,28 @@ def test_grpo_reward_models_are_scored_as_trl_scores_them(monkeypatch):
     assert set(map(repr, tokenizer.calls[:-1:2])) == {repr(dict(return_tensors="pt", padding=True, padding_side="right", add_special_tokens=False))}
 
 
+def test_grpo_reward_functions_get_trl_log_metric_and_log_extra():
+    # TRL 1.0+ passes both loggers; a reward function naming them failed with a TypeError on MLX.
+    from unsloth_zoo.mlx.grpo import calculate_rewards, format_completions
+
+    metrics, extra = [], {}
+
+    def chars(completions, log_metric, log_extra, **kwargs):
+        log_metric("avg_chars", sum(map(len, completions)) / len(completions))
+        log_extra("length", [len(c) for c in completions])
+        return [float(len(c)) for c in completions]
+
+    rewards = calculate_rewards(
+        [chars], [{"prompt": "p"}] * 2, prompts=["p", "p"], completions=["ab", "abcd"], completion_ids=[[1], [2]],
+        trainer_state=None, log_metric=lambda name, value: metrics.append((name, value)),
+        log_extra=lambda column, values: extra.setdefault(column, []).extend(values),
+    )
+    assert rewards[:, 0].tolist() == [2.0, 4.0] and metrics == [("avg_chars", 3.0)] and extra == {"length": [2, 4]}
+    sample = {"prompt": ["p", "p"], "completion": ["ab", "abcd"], "rewards": {"chars": [2.0, 4.0]}, "advantage": [-1.0, 1.0], "extra": extra}
+    assert format_completions(sample, 1).splitlines()[1:] == [
+        "Prompt | Completion | chars | Advantage | length", "'p' | 'ab' | 2.00 | -1.00 | 2", "'p' | 'abcd' | 4.00 | 1.00 | 4"]
+
+
 def test_grpo_rewards_advantages_and_reward_inputs_follow_trl():
     import numpy as np
     from unsloth_zoo.mlx.grpo import GRPOObjective, calculate_rewards, cut_completion, group_advantages, reward_prompts_and_completions  # noqa: E501

@@ -151,7 +151,7 @@ def reward_function_name(reward_func):
 
 
 def calculate_rewards(
-    reward_funcs, rows, *, prompts, completions, completion_ids, trainer_state,
+    reward_funcs, rows, *, prompts, completions, completion_ids, trainer_state, log_metric=None, log_extra=None,
 ):
     """(len(rows), len(reward_funcs)) float32 rewards, NaN where a function returned None; functions are called as TRL calls them."""
     columns = [
@@ -159,11 +159,13 @@ def calculate_rewards(
     ]
     kwargs = {key: [row[key] for row in rows] for key in columns}
     kwargs["trainer_state"] = trainer_state
+    # TRL 1.0+ also hands every reward function these two loggers.
+    loggers = {name: logger for name, logger in (("log_metric", log_metric), ("log_extra", log_extra)) if logger is not None}
     rewards = np.full((len(rows), len(reward_funcs)), np.nan, dtype=np.float32)
     for index, reward_func in enumerate(reward_funcs):
         output = reward_func(
             prompts=prompts, completions=completions,
-            completion_ids=completion_ids, **kwargs,
+            completion_ids=completion_ids, **kwargs, **loggers,
         )
         output = list(output)
         if len(output) != len(rows):
@@ -1290,9 +1292,11 @@ class GRPOBatchPlan:
             if encoded and _is_conversational_prompt(read[prompt]["prompt"]) else read[prompt]["prompt"]
             for prompt in prompts
         ], texts)
+        extra = {}
         rewards = calculate_rewards(
             self._reward_funcs, rows, prompts=reward_prompts, completions=completions,
             completion_ids=completion_ids, trainer_state=self._trainer_state,
+            log_metric=self._record, log_extra=lambda column, values: extra.setdefault(column, []).extend(values),
         )
         advantages, reward_stats = group_advantages(
             rewards, self._reward_weights, self.num_generations, self.scale_rewards,
@@ -1316,6 +1320,7 @@ class GRPOBatchPlan:
                     for column, reward_func in enumerate(self._reward_funcs)
                 },
                 "advantage": advantages.tolist(),
+                "extra": extra,
             }
         # Shuffled before scoring so each old/reference chunk is one micro-batch at its own width, and a first iteration's ratio is exactly 1 when eager.
         order = self._shuffled(visit, len(prompts))
@@ -2090,13 +2095,14 @@ def resolve_grpo_config(config):
 
 def format_completions(sample, step, limit=None):
     """Plain-text take on TRL's print_prompt_completions_sample table: the first limit rows, where TRL draws them at random."""
-    names = list(sample["rewards"])
+    names, extra = list(sample["rewards"]), sample.get("extra", {})
     count = len(sample["prompt"]) if limit is None else min(int(limit), len(sample["prompt"]))
-    lines = [f"Step {step}", " | ".join(("Prompt", "Completion", *names, "Advantage"))]
+    lines = [f"Step {step}", " | ".join(("Prompt", "Completion", *names, "Advantage", *extra))]
     for row in range(count):
         lines.append(" | ".join((
             repr(sample["prompt"][row]), repr(sample["completion"][row]),
             *(f"{sample['rewards'][name][row]:.2f}" for name in names),
             f"{sample['advantage'][row]:.2f}",
+            *(repr(values[row] if row < len(values) else None) for values in extra.values()),
         )))
     return "\n".join(lines)
