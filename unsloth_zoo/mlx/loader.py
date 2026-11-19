@@ -8021,6 +8021,20 @@ def _mlx_token_to_int(token):
     return int(token)
 
 
+@contextmanager
+def _mlx_eval_mode(model):
+    from .generate import _restore_training_flags, _snapshot_training_flags
+    if not callable(getattr(model, "eval", None)) or not hasattr(model, "named_modules"):
+        yield
+        return
+    states = _snapshot_training_flags(module for _, module in model.named_modules())
+    model.eval()
+    try:
+        yield
+    finally:
+        _restore_training_flags(states)
+
+
 def _mlx_generate_vlm(self, *args, **kwargs):
     """HF-style VLM generate() shim backed by mlx-vlm stream_generate."""
     from mlx_vlm import stream_generate
@@ -8130,7 +8144,7 @@ def _mlx_generate_vlm(self, *args, **kwargs):
 
     generated_ids = []
     last_generation_tokens = None
-    with inference_scopes(self, ("vision",), int8_prefill = int8_prefill, ane_prefill = ane_prefill, fast_verify = fast_verify):
+    with _mlx_eval_mode(self), inference_scopes(self, ("vision",), int8_prefill = int8_prefill, ane_prefill = ane_prefill, fast_verify = fast_verify):
         for response in stream_generate(
             self,
             processor,
@@ -8270,7 +8284,7 @@ def _mlx_generate(self, *args, **kwargs):
     generated_ids = []
     eos_restore_state = _mlx_override_tokenizer_eos_ids(tokenizer, eos_token_id)
     try:
-        with inference_scopes(self, (), int8_prefill = int8_prefill, ane_prefill = ane_prefill, fast_verify = fast_verify):
+        with _mlx_eval_mode(self), inference_scopes(self, (), int8_prefill = int8_prefill, ane_prefill = ane_prefill, fast_verify = fast_verify):
             # mlx-lm 0.32 refuses max_tokens=0; the reply is then just the prompt.
             for response in () if max_tokens == 0 else stream_generate(
                 self,

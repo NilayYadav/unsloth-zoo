@@ -5080,3 +5080,44 @@ def test_processor_saves_skip_mlx_vlms_uncopyable_detokenizer(tmp_path):
         save(processor, out)
         assert json.loads((out / "processor_config.json").read_text()) == {"processor_class": "Processor", "size": 32}
         assert processor.detokenizer is detokenizer
+
+
+
+@pytest.mark.parametrize("vlm", [False, True])
+def test_generate_runs_with_dropout_off_and_restores_training(monkeypatch, vlm):
+    import importlib
+    import unsloth_zoo.mlx.loader as loader
+
+    seen = []
+
+    def fake_stream_generate(model, *args, **kwargs):
+        seen.append([module.training for _, module in model.named_modules()])
+        yield types.SimpleNamespace(token=2, generation_tokens=1)
+
+    monkeypatch.setattr(importlib.import_module("mlx_vlm" if vlm else "mlx_lm"), "stream_generate", fake_stream_generate)
+
+    class Module:
+        def __init__(self, *children):
+            self.training = True
+            self.children = children
+
+        def named_modules(self):
+            yield "", self
+            for index, child in enumerate(self.children):
+                yield str(index), child
+
+        def eval(self):
+            for _, module in self.named_modules():
+                module.training = False
+
+    lora, frozen = Module(), Module()
+    frozen.training = False
+    model = Module(lora, frozen)
+    tokenizer = types.SimpleNamespace(bos_token=None, eos_token_ids={2})
+    model._tokenizer = tokenizer
+    model._is_vlm_model = vlm
+    model._processor = types.SimpleNamespace(tokenizer=tokenizer)
+    call = loader._mlx_generate_vlm if vlm else loader._mlx_generate
+    assert call(model, input_ids=[[1, 3]], max_new_tokens=1).tolist() == [[1, 3, 2]]
+    assert seen == [[False, False, False]]
+    assert model.training and lora.training and not frozen.training
