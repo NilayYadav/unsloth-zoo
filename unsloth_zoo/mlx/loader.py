@@ -8373,19 +8373,19 @@ def _patch_mlx_tokenizer_call(tokenizer):
         return_dict = bool(kwargs.get("return_dict", False))
         inner_tokenizer = getattr(self, "_tokenizer", None)
         if (
-            tokenize
-            and return_dict
-            and getattr(self, "_chat_template", None) is None
+            getattr(self, "_chat_template", None) is None
             and hasattr(inner_tokenizer, "apply_chat_template")
+            and (tokenize and return_dict or "enable_thinking" not in kwargs)
         ):
-            if "enable_thinking" not in kwargs:
-                kwargs["enable_thinking"] = getattr(self, "has_thinking", False)
+            # mlx-lm turns thinking on whenever the vocab has think tokens; keep the template's default, as CUDA does.
+            if not (tokenize and return_dict):
+                kwargs["return_dict"] = False
             output = inner_tokenizer.apply_chat_template(
                 *args,
                 tokenize=tokenize,
                 **kwargs,
             )
-            return _mlx_chat_template_batch_encoding(output)
+            return _mlx_chat_template_batch_encoding(output) if tokenize and return_dict else output
 
         output = original_apply_chat_template(
             self,

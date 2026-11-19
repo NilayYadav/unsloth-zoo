@@ -5080,3 +5080,37 @@ def test_processor_saves_skip_mlx_vlms_uncopyable_detokenizer(tmp_path):
         save(processor, out)
         assert json.loads((out / "processor_config.json").read_text()) == {"processor_class": "Processor", "size": 32}
         assert processor.detokenizer is detokenizer
+
+
+def test_tokenizer_wrapper_chat_template_keeps_the_template_thinking_default():
+    import unsloth_zoo.mlx.loader as loader
+
+    class InnerTokenizer:
+        def apply_chat_template(self, messages, tokenize=True, return_dict=False, enable_thinking=False, **kwargs):
+            text = "<think>" if enable_thinking else "prompt"
+            if not tokenize:
+                return text
+            ids = [7] if enable_thinking else [1]
+            return {"input_ids": ids, "attention_mask": [1]} if return_dict else ids
+
+    class TokenizerWrapper:
+        has_thinking = True
+
+        def __init__(self):
+            self._tokenizer = InnerTokenizer()
+            self._chat_template = None
+
+        def apply_chat_template(self, *args, tokenize=True, **kwargs):
+            kwargs.setdefault("enable_thinking", self.has_thinking)
+            kwargs["return_dict"] = False
+            return self._tokenizer.apply_chat_template(*args, tokenize=tokenize, **kwargs)
+
+    tokenizer = TokenizerWrapper()
+    loader._patch_mlx_tokenizer_call(tokenizer)
+    messages = [{"role": "user", "content": "hi"}]
+
+    assert tokenizer.apply_chat_template(messages, tokenize=False) == "prompt"
+    assert tokenizer.apply_chat_template(messages) == [1]
+    assert tokenizer.apply_chat_template(messages, return_dict=True)["input_ids"] == [1]
+    assert tokenizer.apply_chat_template(messages, tokenize=False, enable_thinking=True) == "<think>"
+    assert tokenizer.apply_chat_template(messages, return_dict=True, enable_thinking=True)["input_ids"] == [7]
