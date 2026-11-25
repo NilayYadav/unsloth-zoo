@@ -2580,6 +2580,10 @@ def train_on_responses_only(
             for name in _names
             if (_same_class or _padding_class) and hasattr(_collator, name)
         }
+        if not _kept and getattr(_collator, "pad_to_multiple_of", None) is not None and any(
+            cls.__module__.startswith("trl.") for cls in type(_collator).__mro__
+        ):
+            _kept["pad_to_multiple_of"] = _collator.pad_to_multiple_of
         _text_collator = DataCollatorForSeq2Seq(tokenizer = tokenizer, **_kept)
         # Only when a media-capable collator was displaced. Everywhere else the
         # replacement is the whole point and there is nothing to fall back to.
